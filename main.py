@@ -70,6 +70,7 @@ QSplitter::handle {
 }
 QTabWidget::pane {
     border: 1px solid #1f2937;
+    border-top: none;
     background-color: #0a0a0a;
 }
 QTabBar::tab {
@@ -90,7 +91,7 @@ QTabBar::tab:hover {
 QHeaderView::section {
     background-color: #111827;
     color: #9ca3af;
-    padding: 4px;
+    padding: 0px 4px;
     border: none;
     border-bottom: 1px solid #1f2937;
 }
@@ -100,6 +101,26 @@ QTableWidget {
     gridline-color: #1f2937;
     border: 1px solid #1f2937;
     selection-background-color: #1d4ed8;
+}
+QWidget#signalList QTableWidget {
+    border: none;
+    background-color: #0b1220;
+}
+QWidget#signalList QTableWidget::item {
+    padding: 0px 6px 0px 10px;
+    border-bottom: 1px solid #1f2937;
+}
+QWidget#signalTabSpacer {
+    background-color: #111827;
+    border-bottom: 1px solid #1f2937;
+}
+QWidget#signalRulerHeader {
+    background-color: #111827;
+    border-bottom: 1px solid #1f2937;
+}
+QLabel#signalColumnHeader {
+    color: #9ca3af;
+    font-size: 12px;
 }
 QLineEdit {
     background-color: #111827;

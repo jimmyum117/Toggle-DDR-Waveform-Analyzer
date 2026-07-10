@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QPoint, QTimer, QEvent
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from model.document import WaveformDocument
 from ui.event_panel import EventPanel
+from ui.layout_metrics import RULER_HEIGHT
 from ui.signal_list import SignalListWidget
 from ui.waveform_page import WaveformPage
 
@@ -31,6 +32,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Toggle DDR Waveform Analyzer")
         self.resize(1400, 820)
+        self._idle_tab_counter = 0
+        self._aligning_signals = False
+        self._align_followup_pending = False
+        self._align_timer: QTimer | None = None
 
         self.signal_list = SignalListWidget()
         self.event_panel = EventPanel()
@@ -62,10 +67,12 @@ class MainWindow(QMainWindow):
         root.addWidget(splitter)
         self.setCentralWidget(container)
 
-        self._zoom_label = QLabel("217.1 ps/px")
+        self._zoom_label = QLabel("—")
+        self._cursor_label = QLabel("Cursor: —")
         self._file_label = QLabel("No file open")
         status = QStatusBar()
         status.addWidget(self._file_label, 1)
+        status.addPermanentWidget(self._cursor_label)
         status.addPermanentWidget(self._zoom_label)
         self.setStatusBar(status)
 
@@ -75,6 +82,78 @@ class MainWindow(QMainWindow):
         self._update_actions()
         self.signal_list.bind_document(None)
         self.event_panel.bind_document(None)
+        self._schedule_signal_list_alignment()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._schedule_signal_list_alignment(follow_up=True)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._schedule_signal_list_alignment()
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        # Waveform geometry often settles after the tab is first shown; re-align then.
+        if event.type() in (
+            QEvent.Type.Show,
+            QEvent.Type.Resize,
+            QEvent.Type.Move,
+        ):
+            page = self._current_page()
+            if page is not None and watched is page.waveform_view:
+                follow_up = event.type() == QEvent.Type.Show
+                self._schedule_signal_list_alignment(follow_up=follow_up)
+        return super().eventFilter(watched, event)
+
+    def _schedule_signal_list_alignment(self, follow_up: bool = False) -> None:
+        """Coalesce alignment requests until the next event-loop turn."""
+        if follow_up:
+            self._align_followup_pending = True
+        if self._align_timer is None:
+            self._align_timer = QTimer(self)
+            self._align_timer.setSingleShot(True)
+            self._align_timer.timeout.connect(self._sync_signal_list_alignment)
+        self._align_timer.start(0)
+
+    def _sync_signal_list_alignment(self) -> None:
+        """Align pin rows to waveform tracks using live widget geometry."""
+        if self._aligning_signals or not self.isVisible():
+            return
+
+        page = self._current_page()
+        if page is None:
+            self.signal_list.set_top_spacer_height(self.tabs.tabBar().height())
+            return
+
+        waveform = page.waveform_view
+        table = self.signal_list.table
+        if table.rowCount() == 0:
+            return
+
+        # Skip until the waveform has a real on-screen size (initial open race).
+        if waveform.width() <= 1 or waveform.height() <= 1 or not waveform.isVisible():
+            self._schedule_signal_list_alignment(follow_up=True)
+            return
+
+        self._aligning_signals = True
+        try:
+            target_y = waveform.mapToGlobal(QPoint(0, RULER_HEIGHT)).y()
+            current_y = table.viewport().mapToGlobal(QPoint(0, 0)).y()
+            # Absolute spacer from current geometry (avoids stacking stale deltas).
+            new_height = max(0, self.signal_list.top_spacer_height() + (target_y - current_y))
+            if new_height != self.signal_list.top_spacer_height():
+                self.signal_list.set_top_spacer_height(new_height)
+                layout = self.signal_list.layout()
+                if layout is not None:
+                    layout.activate()
+                self.signal_list.updateGeometry()
+        finally:
+            self._aligning_signals = False
+
+        if self._align_followup_pending:
+            self._align_followup_pending = False
+            # One more pass after the spacer change has been realized on screen.
+            QTimer.singleShot(0, self._sync_signal_list_alignment)
 
     # --- actions / chrome -------------------------------------------------
 
@@ -83,6 +162,13 @@ class MainWindow(QMainWindow):
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
         self.open_action.setStatusTip("Open a log file in a new tab")
         self.open_action.triggered.connect(self.open_log)
+
+        self.new_tab_action = QAction("New Tab (Idle)", self)
+        self.new_tab_action.setShortcut(QKeySequence.StandardKey.New)
+        self.new_tab_action.setStatusTip(
+            "Temporary: open a demo tab with all pins at inactive levels"
+        )
+        self.new_tab_action.triggered.connect(self.new_idle_tab)
 
         self.close_tab_action = QAction("Close Tab", self)
         self.close_tab_action.setShortcut(QKeySequence.StandardKey.Close)
@@ -123,6 +209,7 @@ class MainWindow(QMainWindow):
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.open_action)
+        file_menu.addAction(self.new_tab_action)
         file_menu.addAction(self.close_tab_action)
         file_menu.addAction(self.close_all_action)
         file_menu.addSeparator()
@@ -145,7 +232,7 @@ class MainWindow(QMainWindow):
 
         for action in (
             self.open_action,
-            self.close_tab_action,
+            self.new_tab_action,
             self.save_image_action,
         ):
             toolbar.addAction(action)
@@ -172,12 +259,36 @@ class MainWindow(QMainWindow):
 
     def open_path(self, path: Path) -> None:
         document = WaveformDocument.from_path(path)
+        self._add_document_tab(document, tooltip=str(path))
+        self.statusBar().showMessage(f"Opened {path.name} (parsing not implemented yet)", 4000)
+
+    def new_idle_tab(self) -> None:
+        """Temporary helper: demo tab with every pin held inactive."""
+        self._idle_tab_counter += 1
+        document = WaveformDocument.idle_demo(self._idle_tab_counter)
+        self._add_document_tab(document, tooltip=document.note)
+        self.statusBar().showMessage(
+            "Opened idle demo — pins at inactive levels (CE/WE/RE/RB high, CLE/ALE low)",
+            5000,
+        )
+
+    def _add_document_tab(self, document: WaveformDocument, tooltip: str = "") -> None:
         page = WaveformPage(document)
         page.waveform_view.zoom_changed.connect(self._on_zoom_changed)
+        page.waveform_view.cursor_changed.connect(self._on_cursor_changed)
+        page.waveform_view.installEventFilter(self)
         index = self.tabs.addTab(page, document.title)
-        self.tabs.setTabToolTip(index, str(path))
+        if tooltip:
+            self.tabs.setTabToolTip(index, tooltip)
         self.tabs.setCurrentIndex(index)
-        self.statusBar().showMessage(f"Opened {path.name} (parsing not implemented yet)", 4000)
+        # Fit idle/demo timelines so the full span is visible.
+        if document.timeline.edges:
+            page.waveform_view.fit_view()
+        self._update_actions()
+        self._refresh_status_for_document(document)
+        self._schedule_signal_list_alignment(follow_up=True)
+        # Tab layout can settle after the first deferred sync on some platforms.
+        QTimer.singleShot(50, self._sync_signal_list_alignment)
 
     def close_current_tab(self) -> None:
         index = self.tabs.currentIndex()
@@ -199,6 +310,7 @@ class MainWindow(QMainWindow):
             self.event_panel.bind_document(None)
             self._file_label.setText("No file open")
             self._zoom_label.setText("—")
+            self._cursor_label.setText("Cursor: —")
 
     def _on_tab_changed(self, index: int) -> None:
         page = self._current_page()
@@ -206,13 +318,25 @@ class MainWindow(QMainWindow):
         self.signal_list.bind_document(document)
         self.event_panel.bind_document(document)
         self._update_actions()
+        self._refresh_status_for_document(document)
+        self._schedule_signal_list_alignment(follow_up=True)
+
+    def _refresh_status_for_document(self, document: WaveformDocument | None) -> None:
         if document is None:
             self._file_label.setText("No file open")
             self._zoom_label.setText("—")
+            self._set_cursor_label(None)
             return
         path_text = str(document.path) if document.path else document.title
         self._file_label.setText(path_text)
         self._zoom_label.setText(f"{document.view_state.zoom_ps_per_px:.1f} ps/px")
+        self._set_cursor_label(document.view_state.cursor_ns)
+
+    def _set_cursor_label(self, cursor_ns: float | None) -> None:
+        if cursor_ns is None:
+            self._cursor_label.setText("Cursor: —")
+        else:
+            self._cursor_label.setText(f"Cursor: {cursor_ns:.3f} ns")
 
     def _update_actions(self) -> None:
         has_tab = self.tabs.count() > 0
@@ -242,6 +366,13 @@ class MainWindow(QMainWindow):
 
     def _on_zoom_changed(self, zoom_ps_per_px: float) -> None:
         self._zoom_label.setText(f"{zoom_ps_per_px:.1f} ps/px")
+
+    def _on_cursor_changed(self, cursor_ns: object) -> None:
+        if self.sender() is not None:
+            page = self._current_page()
+            if page is None or page.waveform_view is not self.sender():
+                return
+        self._set_cursor_label(cursor_ns if isinstance(cursor_ns, (int, float)) else None)
 
     def _toggle_event_panel(self, checked: bool) -> None:
         self.event_panel.setVisible(checked)

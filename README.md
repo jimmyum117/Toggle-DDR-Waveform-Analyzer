@@ -10,7 +10,9 @@ This repository currently implements the **UI shell only**. Waveform drawing, pi
 - Left **Signals** list (CE / CLE / ALE / WEN / REN / DQS / RB / DATA)
 - Center **tabbed waveform viewport** — one tab per opened log
 - Right **List View / Search View** event panel (placeholder)
-- Toolbar: **Open**, **Close Tab**, **Save Image**, **Zoom In/Out**, **Fit**
+- Toolbar: **Open**, **New Tab (Idle)** (temporary), **Save Image**, **Zoom In/Out**, **Fit**
+- Closable tabs for each opened log
+- Idle demo tab draws steady inactive levels (active-low pins high, active-high pins low; DATA = ZZ)
 - Save the active waveform viewport as a PNG
 
 ## Requirements
