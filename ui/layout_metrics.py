@@ -1,6 +1,7 @@
 """Shared vertical metrics so the signal list lines up with waveform tracks."""
 
-RULER_HEIGHT = 36
+# Extra headroom so marker numbers sit above time-ruler labels.
+RULER_HEIGHT = 52
 TRACK_HEIGHT = 28
 DATA_TRACK_HEIGHT = 36
 

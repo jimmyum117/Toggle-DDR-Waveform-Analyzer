@@ -1,4 +1,5 @@
 from .document import ViewState, WaveformDocument
+from .markers import add_marker, marker_rows, sorted_markers
 from .timeline import BusSegment, Edge, Timeline
 
 __all__ = [
@@ -7,4 +8,7 @@ __all__ = [
     "BusSegment",
     "Edge",
     "Timeline",
+    "add_marker",
+    "marker_rows",
+    "sorted_markers",
 ]

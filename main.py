@@ -64,6 +64,20 @@ QToolButton:disabled {
     color: #6b7280;
     background-color: #111827;
 }
+QPushButton {
+    background-color: #1f2937;
+    color: #f3f4f6;
+    border: 1px solid #374151;
+    border-radius: 4px;
+    padding: 6px 12px;
+}
+QPushButton:hover {
+    background-color: #374151;
+}
+QPushButton:disabled {
+    color: #6b7280;
+    background-color: #111827;
+}
 QSplitter::handle {
     background-color: #1f2937;
     width: 2px;

@@ -13,10 +13,12 @@ from PySide6.QtGui import (
     QBrush,
     QWheelEvent,
     QMouseEvent,
+    QKeyEvent,
 )
 from PySide6.QtWidgets import QWidget
 
 from model.document import SIGNAL_COLORS, WaveformDocument
+from model.markers import add_marker, sorted_markers
 from ui.layout_metrics import DATA_TRACK_HEIGHT, RULER_HEIGHT, TRACK_HEIGHT, track_height_for
 
 
@@ -25,6 +27,7 @@ class WaveformView(QWidget):
 
     zoom_changed = Signal(float)
     cursor_changed = Signal(object)  # float | None — time in ns
+    markers_changed = Signal()
 
     def __init__(self, document: WaveformDocument, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -40,6 +43,8 @@ class WaveformView(QWidget):
         self._dragging = False
         self._drag_origin = QPoint()
         self._pan_origin_ns = 0.0
+        self._active_marker_ns: float | None = None
+        self._drag_moved = False
 
     # --- view controls ----------------------------------------------------
 
@@ -68,6 +73,54 @@ class WaveformView(QWidget):
     def _clamp_pan(self, pan_ns: float) -> float:
         """Keep the left edge of the viewport at or after 0 ns."""
         return max(0.0, pan_ns)
+
+    def add_marker_at_cursor(self) -> bool:
+        """Drop a marker at the current cursor (or viewport left if unset)."""
+        vs = self.document.view_state
+        time_ns = vs.cursor_ns if vs.cursor_ns is not None else vs.pan_ns
+        time_ns = max(0.0, time_ns)
+        if not add_marker(vs.markers_ns, time_ns):
+            return False
+        self._active_marker_ns = time_ns
+        self.markers_changed.emit()
+        self.update()
+        return True
+
+    def clear_markers(self) -> None:
+        vs = self.document.view_state
+        if not vs.markers_ns:
+            return
+        vs.markers_ns.clear()
+        self._active_marker_ns = None
+        self.markers_changed.emit()
+        self.update()
+
+    def remove_marker(self, time_ns: float, *, snap_eps_ns: float = 0.001) -> bool:
+        """Remove one marker near time_ns. Returns True if something was removed."""
+        vs = self.document.view_state
+        for index, existing in enumerate(vs.markers_ns):
+            if abs(existing - time_ns) <= snap_eps_ns:
+                del vs.markers_ns[index]
+                if (
+                    self._active_marker_ns is not None
+                    and abs(self._active_marker_ns - time_ns) <= snap_eps_ns
+                ):
+                    self._active_marker_ns = None
+                self.markers_changed.emit()
+                self.update()
+                return True
+        return False
+
+    def select_marker(self, time_ns: float) -> None:
+        """Highlight a marker and move the cursor to it."""
+        self._active_marker_ns = time_ns
+        self.document.view_state.cursor_ns = time_ns
+        self.cursor_changed.emit(time_ns)
+        self.update()
+
+    @property
+    def active_marker_ns(self) -> float | None:
+        return self._active_marker_ns
 
     def render_to_image(self) -> QImage:
         image = QImage(self.size(), QImage.Format.Format_ARGB32_Premultiplied)
@@ -116,6 +169,7 @@ class WaveformView(QWidget):
         self._draw_grid(painter, width, height)
         self._draw_ruler(painter, width)
         self._draw_waveforms(painter, width, height)
+        self._draw_markers(painter, width, height)
         self._draw_cursor(painter, width, height)
 
     def _draw_grid(self, painter: QPainter, width: int, height: int) -> None:
@@ -144,7 +198,8 @@ class WaveformView(QWidget):
             painter.drawLine(x, self._ruler_height - 8, x, self._ruler_height - 1)
             t_ns = self._x_to_time(x)
             painter.setPen(QColor("#d1d5db"))
-            painter.drawText(x + 4, 18, f"{t_ns:.3f} ns")
+            # Keep time labels in the lower band of the taller ruler.
+            painter.drawText(x + 4, self._ruler_height - 14, f"{t_ns:.3f} ns")
 
     def _draw_waveforms(self, painter: QPainter, width: int, height: int) -> None:
         timeline = self.document.timeline
@@ -271,13 +326,53 @@ class WaveformView(QWidget):
                     seg.value_hex,
                 )
 
+    def _draw_markers(self, painter: QPainter, width: int, height: int) -> None:
+        markers = sorted_markers(self.document.view_state.markers_ns)
+        if not markers:
+            return
+
+        font = QFont("Menlo", 9)
+        if not font.exactMatch():
+            font = QFont("Courier New", 9)
+        painter.setFont(font)
+
+        for index, time_ns in enumerate(markers, start=1):
+            x = int(round(self._time_to_x(time_ns)))
+            if x < -2 or x > width + 2:
+                continue
+
+            is_active = (
+                self._active_marker_ns is not None
+                and abs(self._active_marker_ns - time_ns) < 1e-9
+            )
+            color = QColor("#fbbf24" if is_active else "#e5e7eb")
+            pen = QPen(color, 2 if is_active else 1)
+            painter.setPen(pen)
+            painter.drawLine(x, self._ruler_height, x, height)
+
+            # Marker tip near the bottom of the number band (above time labels).
+            painter.setBrush(QBrush(color))
+            tip_y = 22
+            painter.drawPolygon(
+                QPolygon(
+                    [
+                        QPoint(x, tip_y + 8),
+                        QPoint(x - 5, tip_y),
+                        QPoint(x + 5, tip_y),
+                    ]
+                )
+            )
+            painter.setPen(QColor("#111827" if is_active else "#f9fafb"))
+            label = str(index)
+            painter.drawText(x - 8, 1, 16, 14, Qt.AlignmentFlag.AlignCenter, label)
+
     def _draw_cursor(self, painter: QPainter, width: int, height: int) -> None:
         cursor = self.document.view_state.cursor_ns
         if cursor is None:
             return
         x = int(round(self._time_to_x(cursor)))
         if 0 <= x <= width:
-            painter.setPen(QPen(QColor("#f8fafc"), 1, Qt.PenStyle.DashLine))
+            painter.setPen(QPen(QColor("#38bdf8"), 1, Qt.PenStyle.DashLine))
             painter.drawLine(x, self._ruler_height, x, height)
 
     def _draw_empty_message(self, painter: QPainter) -> None:
@@ -301,11 +396,20 @@ class WaveformView(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = True
+            self._drag_moved = False
             self._drag_origin = event.position().toPoint()
             self._pan_origin_ns = self.document.view_state.pan_ns
-            self.document.view_state.cursor_ns = self._x_to_time(event.position().x())
+            self.document.view_state.cursor_ns = max(0.0, self._x_to_time(event.position().x()))
             self.cursor_changed.emit(self.document.view_state.cursor_ns)
             self.update()
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.RightButton:
+            # Drop a marker at the clicked time.
+            time_ns = max(0.0, self._x_to_time(event.position().x()))
+            self.document.view_state.cursor_ns = time_ns
+            self.cursor_changed.emit(time_ns)
+            self.add_marker_at_cursor()
             event.accept()
             return
         super().mousePressEvent(event)
@@ -313,6 +417,8 @@ class WaveformView(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if self._dragging:
             dx = event.position().x() - self._drag_origin.x()
+            if abs(dx) >= 3:
+                self._drag_moved = True
             delta_ns = -(dx * self.document.view_state.zoom_ps_per_px) / 1000.0
             self.document.view_state.pan_ns = self._clamp_pan(self._pan_origin_ns + delta_ns)
             self.update()
@@ -326,3 +432,23 @@ class WaveformView(QWidget):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        key = event.key()
+        if key == Qt.Key.Key_Escape:
+            self.clear_markers()
+            event.accept()
+            return
+        if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+            self.zoom_in()
+            event.accept()
+            return
+        if key == Qt.Key.Key_Minus:
+            self.zoom_out()
+            event.accept()
+            return
+        if key == Qt.Key.Key_F:
+            self.fit_view()
+            event.accept()
+            return
+        super().keyPressEvent(event)
