@@ -39,6 +39,8 @@ class MainWindow(QMainWindow):
 
         self.signal_list = SignalListWidget()
         self.event_panel = EventPanel()
+        self.event_panel.marker_selected.connect(self._on_marker_selected)
+        self.event_panel.marker_delete_requested.connect(self._on_marker_delete_requested)
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
         self.tabs.setDocumentMode(True)
@@ -201,6 +203,11 @@ class MainWindow(QMainWindow):
         self.fit_action.setStatusTip("Reset zoom for the active tab")
         self.fit_action.triggered.connect(self.fit_view)
 
+        self.clear_markers_action = QAction("Clear Markers", self)
+        self.clear_markers_action.setShortcut(QKeySequence("Escape"))
+        self.clear_markers_action.setStatusTip("Remove all markers on the active tab")
+        self.clear_markers_action.triggered.connect(self.clear_markers)
+
         self.toggle_list_action = QAction("Toggle Event Panel", self)
         self.toggle_list_action.setCheckable(True)
         self.toggle_list_action.setChecked(True)
@@ -222,6 +229,8 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.zoom_out_action)
         view_menu.addAction(self.fit_action)
         view_menu.addSeparator()
+        view_menu.addAction(self.clear_markers_action)
+        view_menu.addSeparator()
         view_menu.addAction(self.toggle_list_action)
 
     def _build_toolbar(self) -> None:
@@ -239,6 +248,8 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         for action in (self.zoom_in_action, self.zoom_out_action, self.fit_action):
             toolbar.addAction(action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.clear_markers_action)
 
     # --- document / tab management ----------------------------------------
 
@@ -276,6 +287,7 @@ class MainWindow(QMainWindow):
         page = WaveformPage(document)
         page.waveform_view.zoom_changed.connect(self._on_zoom_changed)
         page.waveform_view.cursor_changed.connect(self._on_cursor_changed)
+        page.waveform_view.markers_changed.connect(self._on_markers_changed)
         page.waveform_view.installEventFilter(self)
         index = self.tabs.addTab(page, document.title)
         if tooltip:
@@ -346,6 +358,7 @@ class MainWindow(QMainWindow):
         self.zoom_in_action.setEnabled(has_tab)
         self.zoom_out_action.setEnabled(has_tab)
         self.fit_action.setEnabled(has_tab)
+        self.clear_markers_action.setEnabled(has_tab)
 
     # --- view / export ----------------------------------------------------
 
@@ -364,6 +377,13 @@ class MainWindow(QMainWindow):
         if page:
             page.waveform_view.fit_view()
 
+    def clear_markers(self) -> None:
+        page = self._current_page()
+        if page is None:
+            return
+        page.waveform_view.clear_markers()
+        self.statusBar().showMessage("Markers cleared", 2000)
+
     def _on_zoom_changed(self, zoom_ps_per_px: float) -> None:
         self._zoom_label.setText(f"{zoom_ps_per_px:.1f} ps/px")
 
@@ -373,6 +393,29 @@ class MainWindow(QMainWindow):
             if page is None or page.waveform_view is not self.sender():
                 return
         self._set_cursor_label(cursor_ns if isinstance(cursor_ns, (int, float)) else None)
+
+    def _on_markers_changed(self) -> None:
+        page = self._current_page()
+        if page is None or page.waveform_view is not self.sender():
+            return
+        self.event_panel.refresh_markers()
+        active = page.waveform_view.active_marker_ns
+        if active is not None:
+            self.event_panel.select_marker_time(active)
+
+    def _on_marker_selected(self, time_ns: float) -> None:
+        page = self._current_page()
+        if page is None:
+            return
+        page.waveform_view.select_marker(time_ns)
+        self._set_cursor_label(time_ns)
+
+    def _on_marker_delete_requested(self, time_ns: float) -> None:
+        page = self._current_page()
+        if page is None:
+            return
+        if page.waveform_view.remove_marker(time_ns):
+            self.statusBar().showMessage("Marker deleted", 2000)
 
     def _toggle_event_panel(self, checked: bool) -> None:
         self.event_panel.setVisible(checked)

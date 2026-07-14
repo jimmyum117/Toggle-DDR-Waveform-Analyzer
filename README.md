@@ -7,11 +7,11 @@ This repository currently implements the **UI shell only**. Waveform drawing, pi
 ## Features (UI)
 
 - Dark logic-analyzer style layout
-- Left **Signals** list (CE / CLE / ALE / WEN / REN / DQS / RB / DATA)
+- Left **Signals** list (CE / CLE / ALE / WEN / REN / DQS / RB / WP / DATA)
 - Center **tabbed waveform viewport** — one tab per opened log
-- Right **List View / Search View** event panel (placeholder)
-- Toolbar: **Open**, **New Tab (Idle)** (temporary), **Save Image**, **Zoom In/Out**, **Fit**
-- Closable tabs for each opened log
+- Right **List View** populated by markers (`Mark`, `Sample`, `Time(ns)`, `Diff`)
+- Markers: right-click the waveform to drop; list row selection highlights the marker; **Delete Marker** removes the selected one
+- Toolbar: **Open**, **New Tab (Idle)**, **Save Image**, **Zoom In/Out**, **Fit**, **Clear Markers**
 - Idle demo tab draws steady inactive levels (active-low pins high, active-high pins low; DATA = ZZ)
 - Save the active waveform viewport as a PNG
 
@@ -33,20 +33,20 @@ python main.py
 ```
 main.py                 # app entry
 model/
-  document.py           # WaveformDocument + ViewState (no timeline yet)
+  document.py           # WaveformDocument + ViewState
+  timeline.py           # edges / bus segments
+  markers.py            # marker list helpers
 ui/
   main_window.py        # menus, toolbar, splitters, tabs
   waveform_page.py      # one tab
-  waveform_view.py      # canvas placeholder + PNG export
+  waveform_view.py      # canvas + markers + PNG export
   signal_list.py
   event_panel.py
+  layout_metrics.py     # shared track heights
 ```
 
 ## Not implemented yet
 
 - Log file parser (format TBD)
-- Toggle DDR timing / edge generation
-- Actual digital + DATA hex waveform rendering
-- Event list population and search
-
-Open still creates a tab per file so multi-log workflow and Save Image can be exercised without a parser.
+- Toggle DDR timing / edge generation from packets
+- Event search over decoded protocol events
