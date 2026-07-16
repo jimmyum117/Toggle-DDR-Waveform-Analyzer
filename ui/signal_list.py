@@ -28,6 +28,7 @@ class SignalListWidget(QWidget):
         self.setObjectName("signalList")
         self.setMinimumWidth(160)
         self.setMaximumWidth(280)
+        self._document: WaveformDocument | None = None
 
         # Matches the QTabBar height so content lines up with the tab page.
         self._tab_spacer = QWidget()
@@ -107,12 +108,12 @@ class SignalListWidget(QWidget):
         return self._tab_spacer.height()
 
     def bind_document(self, document: WaveformDocument | None) -> None:
+        self._document = document
         self.table.setRowCount(0)
         if document is None:
             self.table.setFixedHeight(0)
             return
 
-        values = document.current_values()
         total_height = 0
         for name in document.signals:
             row = self.table.rowCount()
@@ -129,7 +130,7 @@ class SignalListWidget(QWidget):
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
 
-            val_item = QTableWidgetItem(values.get(name, "0"))
+            val_item = QTableWidgetItem("0")
             val_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             cnt_item = QTableWidgetItem("0")
@@ -141,3 +142,15 @@ class SignalListWidget(QWidget):
 
         # Rows only — ruler band is a separate widget above the table.
         self.table.setFixedHeight(total_height)
+        self.refresh_values()
+
+    def refresh_values(self) -> None:
+        """Update the Val column from the cursor (or pan) time on the timeline."""
+        document = getattr(self, "_document", None)
+        if document is None:
+            return
+        values = document.current_values()
+        for row, name in enumerate(document.signals):
+            item = self.table.item(row, 1)
+            if item is not None:
+                item.setText(values.get(name, "0"))
