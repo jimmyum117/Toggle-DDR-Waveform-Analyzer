@@ -393,6 +393,39 @@ class WaveformView(QWidget):
             self.zoom_out()
         event.accept()
 
+    def _transition_times_ns(self) -> list[float]:
+        """Times of rising/falling edges across all digital signals."""
+        by_signal: dict[str, list] = {}
+        for edge in self.document.timeline.edges:
+            by_signal.setdefault(edge.signal, []).append(edge)
+
+        times: list[float] = []
+        for edges in by_signal.values():
+            ordered = sorted(edges, key=lambda e: e.time_ns)
+            prev_value: int | None = None
+            for edge in ordered:
+                if prev_value is not None and edge.value != prev_value:
+                    times.append(edge.time_ns)
+                prev_value = edge.value
+        return times
+
+    def _snap_time_to_nearest_edge(
+        self,
+        time_ns: float,
+        click_x: float,
+        *,
+        max_px: float = 15.0,
+    ) -> float:
+        """Snap to the nearest rising/falling edge within max_px of click_x."""
+        best_time: float | None = None
+        best_dx = max_px
+        for edge_t in self._transition_times_ns():
+            dx = abs(self._time_to_x(edge_t) - click_x)
+            if dx <= best_dx:
+                best_dx = dx
+                best_time = edge_t
+        return best_time if best_time is not None else time_ns
+
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = True
@@ -405,8 +438,9 @@ class WaveformView(QWidget):
             event.accept()
             return
         if event.button() == Qt.MouseButton.RightButton:
-            # Drop a marker at the clicked time.
-            time_ns = max(0.0, self._x_to_time(event.position().x()))
+            click_x = event.position().x()
+            time_ns = max(0.0, self._x_to_time(click_x))
+            time_ns = self._snap_time_to_nearest_edge(time_ns, click_x, max_px=15.0)
             self.document.view_state.cursor_ns = time_ns
             self.cursor_changed.emit(time_ns)
             self.add_marker_at_cursor()

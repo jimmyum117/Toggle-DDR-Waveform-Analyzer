@@ -69,7 +69,7 @@ class MainWindow(QMainWindow):
         root.addWidget(splitter)
         self.setCentralWidget(container)
 
-        self._zoom_label = QLabel("—")
+        self._zoom_label = QLabel("Zoom: —")
         self._cursor_label = QLabel("Cursor: —")
         self._file_label = QLabel("No file open")
         status = QStatusBar()
@@ -321,7 +321,7 @@ class MainWindow(QMainWindow):
             self.signal_list.bind_document(None)
             self.event_panel.bind_document(None)
             self._file_label.setText("No file open")
-            self._zoom_label.setText("—")
+            self._zoom_label.setText("Zoom: —")
             self._cursor_label.setText("Cursor: —")
 
     def _on_tab_changed(self, index: int) -> None:
@@ -341,7 +341,7 @@ class MainWindow(QMainWindow):
             return
         path_text = str(document.path) if document.path else document.title
         self._file_label.setText(path_text)
-        self._zoom_label.setText(f"{document.view_state.zoom_ps_per_px:.1f} ps/px")
+        self._zoom_label.setText(f"Zoom: {document.view_state.zoom_ps_per_px:.1f} ps/px")
         self._set_cursor_label(document.view_state.cursor_ns)
 
     def _set_cursor_label(self, cursor_ns: float | None) -> None:
@@ -393,6 +393,7 @@ class MainWindow(QMainWindow):
             if page is None or page.waveform_view is not self.sender():
                 return
         self._set_cursor_label(cursor_ns if isinstance(cursor_ns, (int, float)) else None)
+        self.signal_list.refresh_values()
 
     def _on_markers_changed(self) -> None:
         page = self._current_page()

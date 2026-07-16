@@ -36,6 +36,9 @@ model/
   document.py           # WaveformDocument + ViewState
   timeline.py           # edges / bus segments
   markers.py            # marker list helpers
+  timing.py             # NPHY timing constants (tCS, …)
+decode/
+  nphy_packets.py       # packet → timeline drawers (e.g. draw_e_assert_ce)
 ui/
   main_window.py        # menus, toolbar, splitters, tabs
   waveform_page.py      # one tab
@@ -47,6 +50,14 @@ ui/
 
 ## Not implemented yet
 
-- Log file parser (format TBD)
-- Toggle DDR timing / edge generation from packets
+- Log file parser (format TBD; expected to be a series of NPHY opcodes)
+- Full Toggle DDR timing / edge generation for all packets
 - Event search over decoded protocol events
+
+When the log parser lands, call helpers such as ``decode.draw_e_assert_ce``,
+``draw_e_write_cmd``, ``draw_e_write_addr``, ``draw_b_nop``, and
+``draw_e_timer_ctrl`` in opcode order. Read/status helpers include
+``draw_e_rpio_compare_repeat`` and ``draw_e_read_data_dma``; sequences finish
+with ``draw_e_deassert_all_ce``. The existing viewport renders the resulting
+edges. Wait packets accept ``cycles`` / ``ticks`` or an explicit
+``duration_ns`` override.
