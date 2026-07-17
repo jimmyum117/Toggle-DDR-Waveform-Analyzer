@@ -675,6 +675,64 @@ def draw_e_deassert_all_ce(
 # Default §5.1 single-plane column/row address bytes (placeholder for demos).
 DEFAULT_READ_ADDR_BYTES: tuple[int, ...] = (0x00, 0x00, 0x01, 0x00, 0x00)
 
+# Default §5.2 single-plane row address bytes (placeholder for demos).
+DEFAULT_ERASE_ADDR_BYTES: tuple[int, ...] = (0x01, 0x00, 0x00)
+
+
+def draw_erase_cmd_issue(
+    timeline: Timeline,
+    *,
+    start_ns: float = 10.0,
+    lun: int = 0,
+    addr_bytes: tuple[int, ...] | list[int] = DEFAULT_ERASE_ADDR_BYTES,
+    t_wb_ns: float | None = None,
+    t_erase_ns: float | None = None,
+    timing: NphyTiming | None = None,
+) -> PacketDrawResult:
+    """Synthesize the single-plane ``Erase Cmd Issue`` flow from §5.2.
+
+    Sequence:
+      E_ASSERT_CE → CMD 60h → ADDR×3 → CMD D0h → B_NOP(tWB) →
+      E_TIMER_CTRL(tERASE, deassert CE)
+
+    R/B# falls after D0h and remains busy through tWB and tERASE, returning
+    ready at timer expiry. Status polling after expiry is outside this flow.
+    """
+    timing = timing or DEFAULT_TIMING
+    _require_start_ns(start_ns)
+    if len(addr_bytes) != 3:
+        raise ValueError("addr_bytes must have 3 row-address entries")
+
+    wb_ns = timing.t_wb_ns if t_wb_ns is None else float(t_wb_ns)
+    erase_ns = timing.t_erase_ns if t_erase_ns is None else float(t_erase_ns)
+    if wb_ns < 0:
+        raise ValueError("t_wb_ns must be >= 0")
+    if erase_ns < 0:
+        raise ValueError("t_erase_ns must be >= 0")
+
+    t = start_ns
+    t = draw_e_assert_ce(timeline, start_ns=t, lun=lun, timing=timing).end_ns
+    t = draw_e_write_cmd(timeline, start_ns=t, nand_cmd=0x60, timing=timing).end_ns
+    for addr in addr_bytes:
+        t = draw_e_write_addr(
+            timeline, start_ns=t, nand_addr=addr, timing=timing
+        ).end_ns
+    t = draw_e_write_cmd(timeline, start_ns=t, nand_cmd=0xD0, timing=timing).end_ns
+
+    _set_rb_busy(timeline, t, lun, busy=True)
+    t = draw_b_nop(
+        timeline, start_ns=t, duration_ns=wb_ns, timing=timing
+    ).end_ns
+    timer = draw_e_timer_ctrl(
+        timeline,
+        start_ns=t,
+        duration_ns=erase_ns,
+        nphy_op=NPHY_OP_DEASSERT_CE_WDMA,
+        timing=timing,
+    )
+    _set_rb_busy(timeline, timer.end_ns, lun, busy=False)
+    return timer
+
 
 def draw_read_cmd_issue_through_tr(
     timeline: Timeline,

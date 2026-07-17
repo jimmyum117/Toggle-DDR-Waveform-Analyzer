@@ -1,6 +1,7 @@
 """Decode / synthesize NPHY packet activity onto waveform timelines."""
 
 from decode.nphy_packets import (
+    DEFAULT_ERASE_ADDR_BYTES,
     DEFAULT_READ_ADDR_BYTES,
     NPHY_OP_DEASSERT_CE_IMMEDIATE,
     NPHY_OP_DEASSERT_CE_RDMA,
@@ -25,6 +26,7 @@ from decode.nphy_packets import (
     draw_e_timer_ctrl,
     draw_e_write_addr,
     draw_e_write_cmd,
+    draw_erase_cmd_issue,
     draw_read_cmd_issue_through_tr,
     draw_read_sequence,
     ensure_idle_baseline,
@@ -33,6 +35,7 @@ from decode.nphy_packets import (
 )
 
 __all__ = [
+    "DEFAULT_ERASE_ADDR_BYTES",
     "DEFAULT_READ_ADDR_BYTES",
     "NPHY_OP_DEASSERT_CE_IMMEDIATE",
     "NPHY_OP_DEASSERT_CE_RDMA",
@@ -57,6 +60,7 @@ __all__ = [
     "draw_e_timer_ctrl",
     "draw_e_write_addr",
     "draw_e_write_cmd",
+    "draw_erase_cmd_issue",
     "draw_read_cmd_issue_through_tr",
     "draw_read_sequence",
     "ensure_idle_baseline",
