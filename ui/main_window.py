@@ -41,6 +41,7 @@ class MainWindow(QMainWindow):
         self.event_panel = EventPanel()
         self.event_panel.marker_selected.connect(self._on_marker_selected)
         self.event_panel.marker_delete_requested.connect(self._on_marker_delete_requested)
+        self.event_panel.search_hit_selected.connect(self._on_search_hit_selected)
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
         self.tabs.setDocumentMode(True)
@@ -410,6 +411,16 @@ class MainWindow(QMainWindow):
             return
         page.waveform_view.select_marker(time_ns)
         self._set_cursor_label(time_ns)
+        self.signal_list.refresh_values()
+
+    def _on_search_hit_selected(self, time_ns: float) -> None:
+        page = self._current_page()
+        if page is None:
+            return
+        page.waveform_view.goto_time(time_ns)
+        self._set_cursor_label(time_ns)
+        self.signal_list.refresh_values()
+        self.statusBar().showMessage(f"Jumped to {time_ns:.3f} ns", 2000)
 
     def _on_marker_delete_requested(self, time_ns: float) -> None:
         page = self._current_page()

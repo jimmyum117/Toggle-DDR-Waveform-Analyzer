@@ -29,6 +29,10 @@ class WaveformView(QWidget):
     cursor_changed = Signal(object)  # float | None — time in ns
     markers_changed = Signal()
 
+    # Smaller ps/px = more zoomed in. Match scroll/button zoom limits.
+    MIN_ZOOM_PS_PER_PX = 1.0
+    MAX_ZOOM_PS_PER_PX = 1_000_000.0
+
     def __init__(self, document: WaveformDocument, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.document = document
@@ -48,15 +52,21 @@ class WaveformView(QWidget):
 
     # --- view controls ----------------------------------------------------
 
+    def _clamp_zoom(self, zoom_ps_per_px: float) -> float:
+        return min(
+            self.MAX_ZOOM_PS_PER_PX,
+            max(self.MIN_ZOOM_PS_PER_PX, float(zoom_ps_per_px)),
+        )
+
     def zoom_in(self) -> None:
         vs = self.document.view_state
-        vs.zoom_ps_per_px = max(1.0, vs.zoom_ps_per_px / 1.5)
+        vs.zoom_ps_per_px = self._clamp_zoom(vs.zoom_ps_per_px / 1.5)
         self.zoom_changed.emit(vs.zoom_ps_per_px)
         self.update()
 
     def zoom_out(self) -> None:
         vs = self.document.view_state
-        vs.zoom_ps_per_px = min(1_000_000.0, vs.zoom_ps_per_px * 1.5)
+        vs.zoom_ps_per_px = self._clamp_zoom(vs.zoom_ps_per_px * 1.5)
         self.zoom_changed.emit(vs.zoom_ps_per_px)
         self.update()
 
@@ -64,8 +74,11 @@ class WaveformView(QWidget):
         timeline = self.document.timeline
         span = max(timeline.t_max_ns - timeline.t_min_ns, 1.0)
         width = max(self.width(), 1)
-        # Fit full timeline into the viewport width.
-        self.document.view_state.zoom_ps_per_px = (span * 1000.0) / width
+        # Fit full timeline into the viewport width, without exceeding scroll
+        # zoom limits (short spans would otherwise overshoot max zoom-in).
+        self.document.view_state.zoom_ps_per_px = self._clamp_zoom(
+            (span * 1000.0) / width
+        )
         self.document.view_state.pan_ns = max(0.0, timeline.t_min_ns)
         self.zoom_changed.emit(self.document.view_state.zoom_ps_per_px)
         self.update()
@@ -114,7 +127,18 @@ class WaveformView(QWidget):
     def select_marker(self, time_ns: float) -> None:
         """Highlight a marker and move the cursor to it."""
         self._active_marker_ns = time_ns
-        self.document.view_state.cursor_ns = time_ns
+        self.goto_time(time_ns)
+
+    def goto_time(self, time_ns: float) -> None:
+        """Move the cursor to time_ns and pan it into view if needed."""
+        time_ns = max(0.0, float(time_ns))
+        vs = self.document.view_state
+        vs.cursor_ns = time_ns
+        width = max(self.width(), 1)
+        t0, t1 = self._visible_range(width)
+        if time_ns < t0 or time_ns > t1:
+            span = max(t1 - t0, 1e-12)
+            vs.pan_ns = self._clamp_pan(time_ns - span / 2.0)
         self.cursor_changed.emit(time_ns)
         self.update()
 
@@ -182,6 +206,12 @@ class WaveformView(QWidget):
             painter.setPen(QPen(QColor("#1f2937")))
             painter.drawLine(0, y + h, width, y + h)
 
+    def _format_time_ns(self, time_ns: float) -> str:
+        """Compact ruler label; use scientific notation for large times."""
+        if abs(time_ns) >= 1000.0:
+            return f"{time_ns:.3e} ns"
+        return f"{time_ns:.3f} ns"
+
     def _draw_ruler(self, painter: QPainter, width: int) -> None:
         painter.fillRect(0, 0, width, self._ruler_height, QColor("#111827"))
         painter.setPen(QPen(QColor("#374151")))
@@ -199,7 +229,7 @@ class WaveformView(QWidget):
             t_ns = self._x_to_time(x)
             painter.setPen(QColor("#d1d5db"))
             # Keep time labels in the lower band of the taller ruler.
-            painter.drawText(x + 4, self._ruler_height - 14, f"{t_ns:.3f} ns")
+            painter.drawText(x + 4, self._ruler_height - 14, self._format_time_ns(t_ns))
 
     def _draw_waveforms(self, painter: QPainter, width: int, height: int) -> None:
         timeline = self.document.timeline
@@ -296,18 +326,34 @@ class WaveformView(QWidget):
             bottom = y + h - 4
             mid = (top + bottom) // 2
             notch = min(8, (x1 - x0) // 4)
+            left_clipped = seg.time_ns < t0
+            right_clipped = seg_end > t1
 
-            # Hexagon / angled bus box
-            poly = QPolygon(
-                [
-                    QPoint(x0, mid),
-                    QPoint(x0 + notch, top),
-                    QPoint(x1 - notch, top),
-                    QPoint(x1, mid),
-                    QPoint(x1 - notch, bottom),
-                    QPoint(x0 + notch, bottom),
-                ]
-            )
+            # Draw angled ends only at real DATA boundaries. If a segment
+            # continues beyond the visible range, clip that side vertically.
+            points: list[QPoint] = []
+            if left_clipped:
+                points.append(QPoint(x0, top))
+            else:
+                points.extend((QPoint(x0, mid), QPoint(x0 + notch, top)))
+
+            if right_clipped:
+                points.extend((QPoint(x1, top), QPoint(x1, bottom)))
+            else:
+                points.extend(
+                    (
+                        QPoint(x1 - notch, top),
+                        QPoint(x1, mid),
+                        QPoint(x1 - notch, bottom),
+                    )
+                )
+
+            if left_clipped:
+                points.append(QPoint(x0, bottom))
+            else:
+                points.append(QPoint(x0 + notch, bottom))
+
+            poly = QPolygon(points)
             fill = QColor(color)
             fill.setAlpha(45)
             painter.setBrush(QBrush(fill))
@@ -315,10 +361,12 @@ class WaveformView(QWidget):
             painter.drawPolygon(poly)
 
             painter.setPen(QColor("#e2e8f0"))
-            text_rect_width = max(0, x1 - x0 - 2 * notch)
+            left_inset = 0 if left_clipped else notch
+            right_inset = 0 if right_clipped else notch
+            text_rect_width = max(0, x1 - x0 - left_inset - right_inset)
             if text_rect_width >= 16:
                 painter.drawText(
-                    x0 + notch,
+                    x0 + left_inset,
                     top,
                     text_rect_width,
                     bottom - top,

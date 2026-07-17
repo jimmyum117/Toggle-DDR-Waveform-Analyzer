@@ -9,7 +9,7 @@ This repository currently implements the **UI shell only**. Waveform drawing, pi
 - Dark logic-analyzer style layout
 - Left **Signals** list (CE / CLE / ALE / WEN / REN / DQS / RB / WP / DATA)
 - Center **tabbed waveform viewport** — one tab per opened log
-- Right **List View** populated by markers (`Mark`, `Sample`, `Time(ns)`, `Diff`)
+- Right **List View** for markers; **Search View** for DATA values, rising/falling edges, and multi-signal high/low state combinations
 - Markers: right-click the waveform to drop; list row selection highlights the marker; **Delete Marker** removes the selected one
 - Toolbar: **Open**, **New Tab (Idle)**, **Save Image**, **Zoom In/Out**, **Fit**, **Clear Markers**
 - Idle demo tab draws steady inactive levels (active-low pins high, active-high pins low; DATA = ZZ)
@@ -36,6 +36,7 @@ model/
   document.py           # WaveformDocument + ViewState
   timeline.py           # edges / bus segments
   markers.py            # marker list helpers
+  search.py             # DATA / edge search helpers
   timing.py             # NPHY timing constants (tCS, …)
 decode/
   nphy_packets.py       # packet → timeline drawers (e.g. draw_e_assert_ce)
@@ -52,7 +53,6 @@ ui/
 
 - Log file parser (format TBD; expected to be a series of NPHY opcodes)
 - Full Toggle DDR timing / edge generation for all packets
-- Event search over decoded protocol events
 
 When the log parser lands, call helpers such as ``decode.draw_e_assert_ce``,
 ``draw_e_write_cmd``, ``draw_e_write_addr``, ``draw_b_nop``, and

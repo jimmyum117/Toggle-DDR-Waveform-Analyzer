@@ -36,6 +36,7 @@ class NphyTiming:
     # Runtime waits (§4.1 FW-applied / §5.1 read path).
     t_wb_ns: float = 60.0  # WE high → busy; used for read_confirm B_NOP
     t_r_ns: float = 24100.0  # cell→register (tREAD_* low end, 24.1 µs)
+    t_erase_ns: float = 5_000_000.0  # typical block erase time, 5 ms
     read_confirm_nop_ns: float = 14.0  # derived tWB-adjusted wait after 30h
     t_whr_ns: float = 100.0  # WE# high → RE# low before status read
     t_rhw_ns: float = 40.0  # RE# high → WE# low turnaround

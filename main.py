@@ -142,6 +142,29 @@ QLineEdit {
     border-radius: 4px;
     padding: 6px;
 }
+QComboBox {
+    background-color: #111827;
+    border: 1px solid #374151;
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+QComboBox QAbstractItemView {
+    background-color: #111827;
+    border: 1px solid #374151;
+    selection-background-color: #1f2937;
+}
+QPushButton {
+    background-color: #1f2937;
+    border: 1px solid #374151;
+    border-radius: 4px;
+    padding: 5px 10px;
+}
+QPushButton:hover {
+    background-color: #374151;
+}
+QPushButton:disabled {
+    color: #6b7280;
+}
 QLabel#panelTitle {
     font-weight: 600;
     color: #cbd5e1;
