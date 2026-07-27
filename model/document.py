@@ -46,8 +46,12 @@ SIGNAL_COLORS: dict[str, str] = {
     "DATA": "#c4b5fd",
 }
 
+# Digital edge values: 0/1 driven, LEVEL_Z = undriven / High-Z (drawn mid-track).
+LEVEL_Z = 2
+
 # Active-low pins idle HIGH; active-high pins idle LOW.
-# DQSP/DQSN parked as complementary idle (P high, N low). RB ready = HIGH.
+# REN/REP park as true differential complements. DQSP/DQSN idle High-Z.
+# RB ready = HIGH.
 INACTIVE_LEVELS: dict[str, int] = {
     "CE0": 1,  # CE# active low
     "CE1": 1,
@@ -57,10 +61,10 @@ INACTIVE_LEVELS: dict[str, int] = {
     "ALE": 0,  # active high
     "WEN": 1,  # WE# active low
     "WP": 1,  # WP# active low (protect asserted low; idle = unprotected high)
-    "REN": 1,  # RE# active low
-    "REP": 1,  # RE positive / differential true, idle high
-    "DQSP": 1,
-    "DQSN": 0,
+    "REN": 1,  # RE# inactive high
+    "REP": 0,  # differential complement of REN
+    "DQSP": LEVEL_Z,
+    "DQSN": LEVEL_Z,
     "RB0": 1,  # ready (busy is active low)
     "RB1": 1,
 }
@@ -103,14 +107,19 @@ class WaveformDocument:
                 values[name] = self._data_value_at(t)
             else:
                 default = INACTIVE_LEVELS.get(name, 0)
-                values[name] = str(self.timeline.level_at(name, t, default))
+                level = self.timeline.level_at(name, t, default)
+                values[name] = "Z" if level == LEVEL_Z else str(level)
         return values
 
     def _data_value_at(self, time_ns: float) -> str:
+        """DATA value at ``time_ns`` for the signal list; ``Z`` when undriven."""
         for seg in self.timeline.bus_segments:
             if seg.time_ns <= time_ns < seg.time_ns + seg.duration_ns:
+                hex_val = (seg.value_hex or "").upper()
+                if hex_val in ("", "ZZ", "Z"):
+                    return "Z"
                 return seg.value_hex
-        return "ZZ"
+        return "Z"
 
     @classmethod
     def from_path(cls, path: Path) -> WaveformDocument:
@@ -124,13 +133,28 @@ class WaveformDocument:
 
     @classmethod
     def idle_demo(cls, index: int = 1) -> WaveformDocument:
-        """Temporary demo: all pins held at inactive levels."""
-        timeline = build_idle_timeline()
+        """Temporary demo: full §5.1 read (Cmd Issue + Data Out)."""
+        from decode.nphy_packets import draw_read_sequence
+        from model.timing import DEFAULT_TIMING
+
+        # Demo tR = 40 µs (DEFAULT_TIMING.t_r_ns is FW ≈ 24.1 µs).
+        demo_t_r_ns = 40_000.0
+        timeline = Timeline(t_min_ns=0.0, t_max_ns=0.0)
+        draw_read_sequence(
+            timeline,
+            start_ns=10.0,
+            lun=0,
+            t_r_ns=demo_t_r_ns,
+            timing=DEFAULT_TIMING,
+        )
         return cls(
             path=None,
             title=f"Idle {index}",
             loaded=True,
-            note="Demo tab — all pins at inactive levels.",
+            note=(
+                "TEMP demo — §5.1 Read Cmd Issue + Data Out "
+                f"(tR={demo_t_r_ns / 1000:g} µs, FW default≈{DEFAULT_TIMING.t_r_ns:g} ns)."
+            ),
             timeline=timeline,
             view_state=ViewState(zoom_ps_per_px=1000.0, pan_ns=0.0),
         )
