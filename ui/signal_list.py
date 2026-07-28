@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QBrush
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -26,7 +26,7 @@ class SignalListWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("signalList")
-        self.setMinimumWidth(160)
+        self.setMinimumWidth(180)
         self.setMaximumWidth(280)
         self._document: WaveformDocument | None = None
 
@@ -55,7 +55,7 @@ class SignalListWidget(QWidget):
         pin_hdr.setObjectName("signalColumnHeader")
         val_hdr = QLabel("Val")
         val_hdr.setObjectName("signalColumnHeader")
-        val_hdr.setFixedWidth(36)
+        val_hdr.setFixedWidth(56)
         val_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cnt_hdr = QLabel("Cnt")
         cnt_hdr.setObjectName("signalColumnHeader")
@@ -85,7 +85,7 @@ class SignalListWidget(QWidget):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(1, 36)
+        self.table.setColumnWidth(1, 56)
         self.table.setColumnWidth(2, 36)
         self.table.verticalHeader().setMinimumSectionSize(0)
         self.table.verticalHeader().setDefaultSectionSize(track_height_for(""))
@@ -154,3 +154,18 @@ class SignalListWidget(QWidget):
             item = self.table.item(row, 1)
             if item is not None:
                 item.setText(values.get(name, "0"))
+
+    def render_to_image(self) -> QImage:
+        """Rasterize the pin list (ruler header + rows), excluding the tab spacer."""
+        spacer_h = self.top_spacer_height()
+        content_h = max(0, self.height() - spacer_h)
+        width = max(1, self.width())
+        height = max(1, content_h)
+
+        image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(QColor("#0b1220"))
+        painter = QPainter(image)
+        # Draw from the ruler header downward so pins align with waveform tracks.
+        self.render(painter, QPoint(0, -spacer_h))
+        painter.end()
+        return image

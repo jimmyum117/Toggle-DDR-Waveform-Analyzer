@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QPoint, QTimer, QEvent
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -184,7 +184,9 @@ class MainWindow(QMainWindow):
 
         self.save_image_action = QAction("Save Image…", self)
         self.save_image_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
-        self.save_image_action.setStatusTip("Save the active waveform viewport as a PNG")
+        self.save_image_action.setStatusTip(
+            "Save the pin list and active waveform viewport as a PNG"
+        )
         self.save_image_action.triggered.connect(self.save_image)
 
         self.quit_action = QAction("Quit", self)
@@ -280,7 +282,7 @@ class MainWindow(QMainWindow):
         document = WaveformDocument.idle_demo(self._idle_tab_counter)
         self._add_document_tab(document, tooltip=document.note)
         self.statusBar().showMessage(
-            "Opened idle demo — pins at inactive levels (CE/WE/RE/RB high, CLE/ALE low)",
+            "Opened idle demo — TEMP §5.1 Read Cmd Issue + Data Out",
             5000,
         )
 
@@ -450,7 +452,17 @@ class MainWindow(QMainWindow):
         if not path_str.lower().endswith(".png"):
             path_str += ".png"
 
-        image = page.waveform_view.render_to_image()
+        pins = self.signal_list.render_to_image()
+        wave = page.waveform_view.render_to_image()
+        width = pins.width() + wave.width()
+        height = max(pins.height(), wave.height())
+        image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(QColor("#0a0a0a"))
+        painter = QPainter(image)
+        painter.drawImage(0, 0, pins)
+        painter.drawImage(pins.width(), 0, wave)
+        painter.end()
+
         if not image.save(path_str, "PNG"):
             QMessageBox.warning(self, "Save Failed", f"Could not write:\n{path_str}")
             return

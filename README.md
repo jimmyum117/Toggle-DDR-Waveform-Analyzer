@@ -54,10 +54,18 @@ ui/
 - Log file parser (format TBD; expected to be a series of NPHY opcodes)
 - Full Toggle DDR timing / edge generation for all packets
 
-When the log parser lands, call helpers such as ``decode.draw_e_assert_ce``,
-``draw_e_write_cmd``, ``draw_e_write_addr``, ``draw_b_nop``, and
-``draw_e_timer_ctrl`` in opcode order. Read/status helpers include
-``draw_e_rpio_compare_repeat`` and ``draw_e_read_data_dma``; sequences finish
-with ``draw_e_deassert_all_ce``. The existing viewport renders the resulting
-edges. Wait packets accept ``cycles`` / ``ticks`` or an explicit
-``duration_ns`` override.
+When the log parser lands, call helpers in opcode order. Covered packets:
+
+- **BASIC**: ``draw_b_rxrst``, ``draw_b_nop``, ``draw_b_change_pio``,
+  ``draw_b_test_wpio``, ``draw_b_test_rpio``, ``draw_b_send_dummy_rdata``,
+  ``draw_b_onfi_reg_rw``
+- **EXTEND**: ``draw_e_assert_ce``, ``draw_e_write_cmd``, ``draw_e_write_addr``,
+  ``draw_e_write_data_pio``, ``draw_e_write_data_dma``,
+  ``draw_e_write_data_random``, ``draw_e_read_data_pio``,
+  ``draw_e_read_data_dma``, ``draw_e_rpio_compare``,
+  ``draw_e_rpio_compare_repeat``, ``draw_e_timer_ctrl``,
+  ``draw_e_deassert_all_ce``
+
+The existing viewport renders the resulting edges. Wait packets accept
+``cycles`` / ``ticks`` or an explicit ``duration_ns`` override.
+

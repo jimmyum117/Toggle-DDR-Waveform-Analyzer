@@ -434,9 +434,9 @@ class EventPanel(QWidget):
 
     @staticmethod
     def _format_time(time_ns: float) -> str:
-        if abs(time_ns) >= 1000.0:
-            return f"{time_ns:.3e}"
-        return f"{time_ns:.3f}"
+        """Fixed-point ns for list columns (avoid scientific notation)."""
+        text = f"{time_ns:.6f}".rstrip("0").rstrip(".")
+        return text if text else "0"
 
     def _on_search_mode_changed(self, index: int) -> None:
         mode = self.search_mode.itemData(index)

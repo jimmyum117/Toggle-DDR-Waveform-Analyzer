@@ -14,7 +14,7 @@ class Edge:
 
     time_ns: float
     signal: str
-    value: int  # 0 or 1
+    value: int  # 0 / 1 driven, or LEVEL_Z (2) for High-Z
 
 
 @dataclass

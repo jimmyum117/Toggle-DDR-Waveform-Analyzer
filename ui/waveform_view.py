@@ -17,7 +17,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
-from model.document import SIGNAL_COLORS, WaveformDocument
+from model.document import LEVEL_Z, SIGNAL_COLORS, WaveformDocument
 from model.markers import add_marker, sorted_markers
 from ui.layout_metrics import DATA_TRACK_HEIGHT, RULER_HEIGHT, TRACK_HEIGHT, track_height_for
 
@@ -32,6 +32,10 @@ class WaveformView(QWidget):
     # Smaller ps/px = more zoomed in. Match scroll/button zoom limits.
     MIN_ZOOM_PS_PER_PX = 1.0
     MAX_ZOOM_PS_PER_PX = 1_000_000.0
+    # Below this width, draw a tick instead of a bus polygon (zoomed-out pulses).
+    _MIN_BUS_SHAPE_PX = 4
+    # Hex text needs enough room; omit when zoomed out.
+    _MIN_BUS_TEXT_PX = 16
 
     def __init__(self, document: WaveformDocument, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -247,6 +251,14 @@ class WaveformView(QWidget):
             else:
                 self._draw_digital_track(painter, name, y, h, width, color)
 
+    def _y_for_digital_level(self, level: int, y: int, h: int) -> int:
+        """Map 0/1/Z to track Y. High-Z sits mid-row for DQS idle clarity."""
+        y_high = y + self._pad_y
+        y_low = y + h - self._pad_y
+        if level == LEVEL_Z:
+            return (y_high + y_low) // 2
+        return y_high if level else y_low
+
     def _draw_digital_track(
         self,
         painter: QPainter,
@@ -260,8 +272,6 @@ class WaveformView(QWidget):
         if not edges:
             return
 
-        y_high = y + self._pad_y
-        y_low = y + h - self._pad_y
         t0, t1 = self._visible_range(width)
 
         # Walk edges and build a step polyline across the visible window.
@@ -275,7 +285,7 @@ class WaveformView(QWidget):
 
         points: list[QPoint] = []
         x = 0
-        y_level = y_high if level else y_low
+        y_level = self._y_for_digital_level(level, y, h)
         points.append(QPoint(x, y_level))
 
         for edge in edges:
@@ -287,7 +297,7 @@ class WaveformView(QWidget):
             # horizontal to transition, then vertical
             points.append(QPoint(ex, y_level))
             level = edge.value
-            y_level = y_high if level else y_low
+            y_level = self._y_for_digital_level(level, y, h)
             points.append(QPoint(ex, y_level))
 
         points.append(QPoint(width, y_level))
@@ -312,6 +322,11 @@ class WaveformView(QWidget):
             font = QFont("Courier New", 10)
         painter.setFont(font)
 
+        top = y + 4
+        bottom = y + h - 4
+        mid = (top + bottom) // 2
+        tick_h = max(1, bottom - top)
+
         for seg in self.document.timeline.bus_segments:
             seg_end = seg.time_ns + seg.duration_ns
             if seg_end < t0 or seg.time_ns > t1:
@@ -319,15 +334,29 @@ class WaveformView(QWidget):
 
             x0 = max(0, int(round(self._time_to_x(seg.time_ns))))
             x1 = min(width, int(round(self._time_to_x(seg_end))))
-            if x1 - x0 < 4:
+            span_px = x1 - x0
+
+            # Zoomed far out: short DQ pulses collapse to <1–3 px and used to
+            # vanish. Draw a compact tick so activity remains visible (no hex).
+            if span_px < self._MIN_BUS_SHAPE_PX:
+                cx = int(
+                    round(self._time_to_x(seg.time_ns + 0.5 * seg.duration_ns))
+                )
+                if cx < 0 or cx >= width:
+                    continue
+                fill = QColor(color)
+                fill.setAlpha(140)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(fill))
+                tick_w = 2
+                painter.drawRect(cx - tick_w // 2, top, tick_w, tick_h)
+                painter.setPen(QPen(color, 1))
+                painter.drawLine(cx, top, cx, bottom)
                 continue
 
-            top = y + 4
-            bottom = y + h - 4
-            mid = (top + bottom) // 2
-            notch = min(8, (x1 - x0) // 4)
             left_clipped = seg.time_ns < t0
             right_clipped = seg_end > t1
+            notch = min(8, span_px // 4)
 
             # Draw angled ends only at real DATA boundaries. If a segment
             # continues beyond the visible range, clip that side vertically.
@@ -360,16 +389,16 @@ class WaveformView(QWidget):
             painter.setPen(QPen(color, 1))
             painter.drawPolygon(poly)
 
-            painter.setPen(QColor("#e2e8f0"))
             left_inset = 0 if left_clipped else notch
             right_inset = 0 if right_clipped else notch
-            text_rect_width = max(0, x1 - x0 - left_inset - right_inset)
-            if text_rect_width >= 16:
+            text_rect_width = max(0, span_px - left_inset - right_inset)
+            if text_rect_width >= self._MIN_BUS_TEXT_PX:
+                painter.setPen(QColor("#e2e8f0"))
                 painter.drawText(
                     x0 + left_inset,
                     top,
                     text_rect_width,
-                    bottom - top,
+                    tick_h,
                     Qt.AlignmentFlag.AlignCenter,
                     seg.value_hex,
                 )
@@ -442,7 +471,7 @@ class WaveformView(QWidget):
         event.accept()
 
     def _transition_times_ns(self) -> list[float]:
-        """Times of rising/falling edges across all digital signals."""
+        """Times of digital edges and DATA bus boundaries for marker snapping."""
         by_signal: dict[str, list] = {}
         for edge in self.document.timeline.edges:
             by_signal.setdefault(edge.signal, []).append(edge)
@@ -455,6 +484,11 @@ class WaveformView(QWidget):
                 if prev_value is not None and edge.value != prev_value:
                     times.append(edge.time_ns)
                 prev_value = edge.value
+
+        # DATA: snap to segment start/end (value change or Hi-Z boundaries).
+        for seg in self.document.timeline.bus_segments:
+            times.append(seg.time_ns)
+            times.append(seg.time_ns + seg.duration_ns)
         return times
 
     def _snap_time_to_nearest_edge(
@@ -464,7 +498,7 @@ class WaveformView(QWidget):
         *,
         max_px: float = 15.0,
     ) -> float:
-        """Snap to the nearest rising/falling edge within max_px of click_x."""
+        """Snap to the nearest digital or DATA edge within max_px of click_x."""
         best_time: float | None = None
         best_dx = max_px
         for edge_t in self._transition_times_ns():
