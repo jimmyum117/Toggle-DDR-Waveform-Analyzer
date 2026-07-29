@@ -42,8 +42,12 @@ class NphyTiming:
     t_ceh_ns: float = 30.0  # ONFI CE high between deassert/reassert
     t_r_ns: float = 24100.0  # cell→register (tREAD_* low end, 24.1 µs)
     t_erase_ns: float = 5_000_000.0  # typical block erase time, 5 ms
+    t_prog_ns: float = 1_200_000.0  # average program time (Table 48 low end, 1.2 ms)
+    t_adl_ns: float = 300.0  # address → data (setup_ddr B_NOP)
     # read_confirm_nop = (tWB − tCS − (tWC − tWP) − tCEH) − 1 → 14 ns
     read_confirm_nop_ns: float = 14.0
+    # program confirm B_NOP after 10h/1Ah (§5.3): tWB − tCEH → 30 ns
+    program_confirm_nop_ns: float = 30.0
     t_whr_ns: float = 100.0  # WE# high → RE# low before status read
     t_rhw_ns: float = 40.0  # RE# high → WE# low turnaround
     t_whr2_ns: float = 225.0  # random data-output setup after E0h

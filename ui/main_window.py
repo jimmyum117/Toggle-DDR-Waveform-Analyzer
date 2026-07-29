@@ -63,6 +63,12 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
         splitter.setSizes([200, 900, 300])
+        # Keep side panels (and center) from snapping to width 0 on drag.
+        # Widget minimumWidth alone does not stop QSplitter collapse.
+        splitter.setChildrenCollapsible(False)
+        for i in range(splitter.count()):
+            splitter.setCollapsible(i, False)
+        center.setMinimumWidth(200)
 
         container = QWidget()
         root = QHBoxLayout(container)
@@ -206,6 +212,20 @@ class MainWindow(QMainWindow):
         self.fit_action.setStatusTip("Reset zoom for the active tab")
         self.fit_action.triggered.connect(self.fit_view)
 
+        self.focus_start_action = QAction("Start", self)
+        self.focus_start_action.setShortcut(QKeySequence("Home"))
+        self.focus_start_action.setStatusTip(
+            "Jump to the start of the active waveform"
+        )
+        self.focus_start_action.triggered.connect(self.focus_start)
+
+        self.focus_end_action = QAction("End", self)
+        self.focus_end_action.setShortcut(QKeySequence("End"))
+        self.focus_end_action.setStatusTip(
+            "Jump to the last edge/activity in the active waveform"
+        )
+        self.focus_end_action.triggered.connect(self.focus_end)
+
         self.clear_markers_action = QAction("Clear Markers", self)
         self.clear_markers_action.setShortcut(QKeySequence("Escape"))
         self.clear_markers_action.setStatusTip("Remove all markers on the active tab")
@@ -231,6 +251,8 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.zoom_in_action)
         view_menu.addAction(self.zoom_out_action)
         view_menu.addAction(self.fit_action)
+        view_menu.addAction(self.focus_start_action)
+        view_menu.addAction(self.focus_end_action)
         view_menu.addSeparator()
         view_menu.addAction(self.clear_markers_action)
         view_menu.addSeparator()
@@ -249,7 +271,13 @@ class MainWindow(QMainWindow):
         ):
             toolbar.addAction(action)
         toolbar.addSeparator()
-        for action in (self.zoom_in_action, self.zoom_out_action, self.fit_action):
+        for action in (
+            self.zoom_in_action,
+            self.zoom_out_action,
+            self.fit_action,
+            self.focus_start_action,
+            self.focus_end_action,
+        ):
             toolbar.addAction(action)
         toolbar.addSeparator()
         toolbar.addAction(self.clear_markers_action)
@@ -361,6 +389,8 @@ class MainWindow(QMainWindow):
         self.zoom_in_action.setEnabled(has_tab)
         self.zoom_out_action.setEnabled(has_tab)
         self.fit_action.setEnabled(has_tab)
+        self.focus_start_action.setEnabled(has_tab)
+        self.focus_end_action.setEnabled(has_tab)
         self.clear_markers_action.setEnabled(has_tab)
 
     # --- view / export ----------------------------------------------------
@@ -379,6 +409,16 @@ class MainWindow(QMainWindow):
         page = self._current_page()
         if page:
             page.waveform_view.fit_view()
+
+    def focus_start(self) -> None:
+        page = self._current_page()
+        if page:
+            page.waveform_view.focus_start()
+
+    def focus_end(self) -> None:
+        page = self._current_page()
+        if page:
+            page.waveform_view.focus_end()
 
     def clear_markers(self) -> None:
         page = self._current_page()

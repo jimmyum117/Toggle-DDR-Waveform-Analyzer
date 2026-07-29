@@ -133,18 +133,16 @@ class WaveformDocument:
 
     @classmethod
     def idle_demo(cls, index: int = 1) -> WaveformDocument:
-        """Temporary demo: full §5.1 read (Cmd Issue + Data Out)."""
+        """Temporary demo: full §5.1 Read Cmd Issue + Data Out."""
         from decode.nphy_packets import draw_read_sequence
         from model.timing import DEFAULT_TIMING
 
-        # Demo tR = 40 µs (DEFAULT_TIMING.t_r_ns is FW ≈ 24.1 µs).
-        demo_t_r_ns = 40_000.0
         timeline = Timeline(t_min_ns=0.0, t_max_ns=0.0)
         draw_read_sequence(
             timeline,
             start_ns=10.0,
             lun=0,
-            t_r_ns=demo_t_r_ns,
+            t_r_ns=DEFAULT_TIMING.t_r_ns,  # 24.1 µs
             timing=DEFAULT_TIMING,
         )
         return cls(
@@ -153,7 +151,7 @@ class WaveformDocument:
             loaded=True,
             note=(
                 "TEMP demo — §5.1 Read Cmd Issue + Data Out "
-                f"(tR={demo_t_r_ns / 1000:g} µs, FW default≈{DEFAULT_TIMING.t_r_ns:g} ns)."
+                f"(tR={DEFAULT_TIMING.t_r_ns / 1000:g} µs)."
             ),
             timeline=timeline,
             view_state=ViewState(zoom_ps_per_px=1000.0, pan_ns=0.0),

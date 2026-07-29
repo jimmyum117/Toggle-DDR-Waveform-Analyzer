@@ -87,6 +87,26 @@ class WaveformView(QWidget):
         self.zoom_changed.emit(self.document.view_state.zoom_ps_per_px)
         self.update()
 
+    def focus_start(self) -> None:
+        """Pan/cursor to the start of the waveform (timeline t_min)."""
+        self.goto_time(max(0.0, self.document.timeline.t_min_ns))
+
+    def focus_end(self) -> None:
+        """Pan/cursor to the last edge or bus activity in the waveform."""
+        self.goto_time(self._last_activity_ns())
+
+    def _last_activity_ns(self) -> float:
+        timeline = self.document.timeline
+        last_ns = float(timeline.t_max_ns)
+        if timeline.edges:
+            last_ns = max(last_ns, max(e.time_ns for e in timeline.edges))
+        if timeline.bus_segments:
+            last_ns = max(
+                last_ns,
+                max(s.time_ns + s.duration_ns for s in timeline.bus_segments),
+            )
+        return max(0.0, last_ns)
+
     def _clamp_pan(self, pan_ns: float) -> float:
         """Keep the left edge of the viewport at or after 0 ns."""
         return max(0.0, pan_ns)
