@@ -82,6 +82,8 @@ class ViewState:
     pan_ns: float = 0.0
     cursor_ns: float | None = None
     markers_ns: list[float] = field(default_factory=list)
+    # TEMP debug: draw timing-param labels on each signal track.
+    show_timing_labels: bool = True
 
 
 @dataclass
@@ -133,6 +135,19 @@ class WaveformDocument:
 
     @classmethod
     def idle_demo(cls, index: int = 1) -> WaveformDocument:
+        """Temporary demo: all pins held at inactive levels."""
+        timeline = build_idle_timeline()
+        return cls(
+            path=None,
+            title=f"Idle {index}",
+            loaded=True,
+            note="Demo tab — all pins at inactive levels.",
+            timeline=timeline,
+            view_state=ViewState(zoom_ps_per_px=1000.0, pan_ns=0.0),
+        )
+
+    @classmethod
+    def read_cmd_issue_demo(cls, index: int = 1) -> WaveformDocument:
         """Temporary demo: full §5.1 Read Cmd Issue + Data Out."""
         from decode.nphy_packets import draw_read_sequence
         from model.timing import DEFAULT_TIMING
@@ -147,11 +162,37 @@ class WaveformDocument:
         )
         return cls(
             path=None,
-            title=f"Idle {index}",
+            title=f"Read {index}",
             loaded=True,
             note=(
                 "TEMP demo — §5.1 Read Cmd Issue + Data Out "
                 f"(tR={DEFAULT_TIMING.t_r_ns / 1000:g} µs)."
+            ),
+            timeline=timeline,
+            view_state=ViewState(zoom_ps_per_px=1000.0, pan_ns=0.0),
+        )
+
+    @classmethod
+    def program_cmd_issue_demo(cls, index: int = 1) -> WaveformDocument:
+        """Temporary demo: §5.3 Program Cmd Issue (single-plane last plane)."""
+        from decode.nphy_packets import draw_program_cmd_issue
+        from model.timing import DEFAULT_TIMING
+
+        timeline = Timeline(t_min_ns=0.0, t_max_ns=0.0)
+        draw_program_cmd_issue(
+            timeline,
+            start_ns=10.0,
+            lun=0,
+            t_prog_ns=DEFAULT_TIMING.t_prog_ns,  # 1.2 ms
+            timing=DEFAULT_TIMING,
+        )
+        return cls(
+            path=None,
+            title=f"Program {index}",
+            loaded=True,
+            note=(
+                "TEMP demo — §5.3 Program Cmd Issue "
+                f"(tPROG={DEFAULT_TIMING.t_prog_ns / 1_000_000:g} ms)."
             ),
             timeline=timeline,
             view_state=ViewState(zoom_ps_per_px=1000.0, pan_ns=0.0),

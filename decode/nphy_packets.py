@@ -16,8 +16,11 @@ from dataclasses import dataclass, replace
 from typing import Sequence
 
 from model.document import DIGITAL_SIGNALS, INACTIVE_LEVELS
-from model.timeline import BusSegment, Edge, Timeline
+from model.timeline import BusSegment, Edge, Timeline, TimingSpan
 from model.timing import DEFAULT_TIMING, NphyTiming
+
+# Signals that typically hold steady during B_NOP / timer waits (debug labels).
+_WAIT_LABEL_SIGNALS: tuple[str, ...] = ("CLE", "ALE", "WEN", "REN", "REP")
 
 # Runtime opcodes as used in lhotse macros (BASIC 0x00–0x0F, EXTEND 0x10–0x1F).
 OPC_B_RXRST = 0x00  # BASIC 0
@@ -132,6 +135,45 @@ def _append_edge(timeline: Timeline, time_ns: float, signal: str, value: int) ->
     timeline.t_max_ns = max(timeline.t_max_ns, time_ns)
 
 
+def _append_timing_span(
+    timeline: Timeline,
+    *,
+    signal: str,
+    time_ns: float,
+    duration_ns: float,
+    param: str,
+) -> None:
+    """TEMP debug: record which timing param produced a hold on ``signal``."""
+    if duration_ns <= 0 or not param:
+        return
+    timeline.timing_spans.append(
+        TimingSpan(
+            time_ns=float(time_ns),
+            duration_ns=float(duration_ns),
+            signal=signal,
+            param=param,
+        )
+    )
+
+
+def _append_timing_span_many(
+    timeline: Timeline,
+    signals: Sequence[str],
+    *,
+    time_ns: float,
+    duration_ns: float,
+    param: str,
+) -> None:
+    for signal in signals:
+        _append_timing_span(
+            timeline,
+            signal=signal,
+            time_ns=time_ns,
+            duration_ns=duration_ns,
+            param=param,
+        )
+
+
 def _append_data(
     timeline: Timeline,
     time_ns: float,
@@ -208,36 +250,102 @@ def _append_read_transfer(
     label: str,
     timing: NphyTiming,
 ) -> float:
-    """Draw configured RE/DQS activity for one Toggle-DDR read transfer."""
+    """Draw configured RE/DQS activity for one Toggle-DDR read transfer.
+
+    RE sequence (after any prior ``tWHR``/``tWHR2`` wait already elapsed):
+      1. RE toggles once (falls) and stays low for ``tRPRE``
+      2. Data pulse train (``tRC/2``) until DQS pulsing ends
+      3. Hold for ``tRPST + tRPSTH``, then return to idle
+
+    DQS leaves High-Z after ``tDQSRE`` from transfer start, then begins
+    pulsing (with DQ) ``tDQSRE`` after RE's ``tRPRE`` window ends.
+    """
     if byte_count <= 0:
         raise ValueError("byte_count must be > 0")
     if data is not None and len(data) < byte_count:
         raise ValueError("data must contain at least byte_count entries")
 
     first_re_ns = start_ns + timing.t_cr_ns
-    data_start_ns = first_re_ns + max(timing.t_rpre_ns, timing.t_dqsre_ns)
     beat_ns = timing.t_rc_ns / 2.0
-    cycle_count = (byte_count + 1) // 2
-    re_cycle_ns = timing.t_rp_ns + timing.t_reh_ns
+    t_rpre = timing.t_rpre_ns
+    t_dqsre = timing.t_dqsre_ns
+    post_ns = timing.t_rpst_ns + timing.t_rpsth_ns
 
-    # REN/REP are a true differential pair (always complements).
-    # RE pulse widths use Toggle-DDR tRP / tREH (0.45×tRC).
-    for cycle in range(cycle_count):
-        cycle_ns = first_re_ns + cycle * re_cycle_ns
-        _append_edge(timeline, cycle_ns, "REN", 0)
-        _append_edge(timeline, cycle_ns, "REP", 1)
-        _append_edge(timeline, cycle_ns + timing.t_rp_ns, "REN", 1)
-        _append_edge(timeline, cycle_ns + timing.t_rp_ns, "REP", 0)
+    if timing.t_cr_ns > 0:
+        _append_timing_span_many(
+            timeline,
+            ("REN", "REP"),
+            time_ns=start_ns,
+            duration_ns=timing.t_cr_ns,
+            param="tCR",
+        )
 
-    # DQS stays in phase with the write/read clock (edges on the tDSC or tRC
-    # half-period grid from data_start). DQ is shifted 90° (half_beat = t/4 of
-    # a full DQS cycle) so each DQS edge sits at the center of its DQ beat.
+    # RE: fall once at transfer start, stay low for tRPRE, then pulse.
+    _append_re_pair(timeline, first_re_ns, ren_low=True)
+    _append_timing_span_many(
+        timeline,
+        ("REN", "REP"),
+        time_ns=first_re_ns,
+        duration_ns=t_rpre,
+        param="tRPRE",
+    )
+    re_data_start_ns = first_re_ns + t_rpre
+
+    # DQS: stay High-Z for tDQSRE from transfer start, then drive static.
+    # Pulsing (and DQ) begin tDQSRE after RE's tRPRE ends.
+    dqs_drive_ns = first_re_ns + t_dqsre
+    dqs_pulse_ns = re_data_start_ns + t_dqsre
+    dqs_end_ns = dqs_pulse_ns + byte_count * beat_ns
+
+    # RE keeps pulsing on the tRC/2 grid until DQS pulsing ends.
+    re_index = 0
+    while True:
+        edge_ns = re_data_start_ns + re_index * beat_ns
+        if edge_ns >= dqs_end_ns - 1e-12:
+            break
+        dur_ns = min(beat_ns, dqs_end_ns - edge_ns)
+        _append_re_pair(timeline, edge_ns, ren_low=(re_index % 2 == 1))
+        _append_timing_span_many(
+            timeline,
+            ("REN", "REP"),
+            time_ns=edge_ns,
+            duration_ns=dur_ns,
+            param="tRC/2",
+        )
+        re_index += 1
+
+    _append_timing_span_many(
+        timeline,
+        ("DQSP", "DQSN"),
+        time_ns=first_re_ns,
+        duration_ns=t_dqsre,
+        param="tDQSRE",
+    )
+    # Leave High-Z; hold static high so the first data beat is a falling edge.
+    _append_edge(timeline, dqs_drive_ns, "DQSP", 1)
+    _append_edge(timeline, dqs_drive_ns, "DQSN", 0)
+    # Second tDQSRE: from end of RE tRPRE until DQS/DQ pulsing begins.
+    _append_timing_span_many(
+        timeline,
+        ("DQSP", "DQSN"),
+        time_ns=re_data_start_ns,
+        duration_ns=t_dqsre,
+        param="tDQSRE",
+    )
+
     half_beat_ns = beat_ns / 2.0
     for index in range(byte_count):
-        dqs_edge_ns = data_start_ns + index * beat_ns
+        dqs_edge_ns = dqs_pulse_ns + index * beat_ns
         dqs_p = index & 1
         _append_edge(timeline, dqs_edge_ns, "DQSP", dqs_p)
         _append_edge(timeline, dqs_edge_ns, "DQSN", 1 - dqs_p)
+        _append_timing_span_many(
+            timeline,
+            ("DQSP", "DQSN"),
+            time_ns=dqs_edge_ns,
+            duration_ns=beat_ns,
+            param="tRC/2",
+        )
         value = "XX" if data is None else f"{int(data[index]) & 0xFF:02X}"
         _append_bus_value(
             timeline,
@@ -246,9 +354,23 @@ def _append_read_transfer(
             value,
             label=label if index == 0 else None,
         )
+        _append_timing_span(
+            timeline,
+            signal="DATA",
+            time_ns=dqs_edge_ns - half_beat_ns,
+            duration_ns=beat_ns,
+            param="tRC/2 (DQ↔DQS 90°)",
+        )
 
-    transfer_end_ns = data_start_ns + byte_count * beat_ns
-    end_ns = transfer_end_ns + max(timing.t_rpst_ns, timing.t_rpsth_ns)
+    transfer_end_ns = dqs_end_ns
+    end_ns = transfer_end_ns + post_ns
+    _append_timing_span_many(
+        timeline,
+        ("REN", "REP", "DQSP", "DQSN"),
+        time_ns=transfer_end_ns,
+        duration_ns=post_ns,
+        param="tRPST+tRPSTH",
+    )
     _append_edge(timeline, end_ns, "REN", INACTIVE_LEVELS["REN"])
     _append_edge(timeline, end_ns, "REP", INACTIVE_LEVELS["REP"])
     _append_edge(timeline, end_ns, "DQSP", INACTIVE_LEVELS["DQSP"])
@@ -278,12 +400,11 @@ def _append_status_compare_transfer(
 ) -> float:
     """Draw one ``E_RPIO_COMPARE_REPEAT`` status-out attempt.
 
-    After ``tWHR`` (``start_ns``):
-      - REN/REP: ``tRPRE`` preamble, ``tREH`` hold, then one ``tRP``/``tREH``
-        cycle per status byte, then ``tRPSTH`` postamble
-      - DQS: starts ``tDQSRE`` after ``start_ns``; half-periods reuse ``tRP``
-        (low) / ``tREH`` (high) to match REN pulse widths
-      - DATA: begins on the second DQS edge; each byte lasts one DQS half-period
+    After ``tWHR``/``tWHRS`` (``start_ns``), per Toggle §4.8.7 read-status:
+      - ``tRPRE`` and ``tDQSRE`` both start at the first RE falling edge
+      - First DQS edge at ``start + tDQSRE``; further DQS/RE edges share a
+        ``tRP``/``tREH`` burst (initial ``tDQSRE`` is the only RE→DQS wait)
+      - Status DATA is during that burst; ``tRPSTH`` starts after DATA ends
     """
     if byte_count <= 0:
         raise ValueError("byte_count must be > 0")
@@ -295,32 +416,100 @@ def _append_status_compare_transfer(
     t_rp = timing.t_rp_ns
     t_reh = timing.t_reh_ns
     t_rpsth = timing.t_rpsth_ns
-    re_cycle_ns = t_rp + t_reh
+    t_qdqss = timing.t_qdqss_ns
 
-    # DQS train: first edge at start+tDQSRE; DATA from the second edge.
-    t_dqs = start_ns + t_dqsre
+    # DQS/DATA grid: one tDQSRE, then tRP/tREH half-periods.
+    first_dqs_ns = start_ns + t_dqsre
+    dqs_times = [first_dqs_ns]
+    t_dqs = first_dqs_ns
+    for i in range(byte_count + 1):
+        t_dqs += t_rp if (i % 2 == 0) else t_reh
+        dqs_times.append(t_dqs)
+    data_start_ns = dqs_times[1]
+    data_end_ns = dqs_times[1 + byte_count]
 
-    def _dqs_edge_ns(edge: int) -> float:
-        """Edge times with tRP (even→odd) / tREH (odd→even) half-periods."""
-        full, rem = divmod(edge, 2)
-        return t_dqs + full * re_cycle_ns + (t_rp if rem else 0.0)
+    # --- REN/REP: preamble, then toggle with the DQS burst, then tRPSTH ---
+    preamble_end_ns = start_ns + t_rpre
+    _append_re_pair(timeline, start_ns, ren_low=True)
+    _append_re_pair(timeline, preamble_end_ns, ren_low=False)
+    _append_timing_span_many(
+        timeline,
+        ("REN", "REP"),
+        time_ns=start_ns,
+        duration_ns=t_rpre,
+        param="tRPRE",
+    )
 
-    data_start_ns = _dqs_edge_ns(1)
-    data_end_ns = _dqs_edge_ns(1 + byte_count)
+    # After the initial tDQSRE, RE tracks the status burst with DQS so DATA
+    # is not pushed into postamble (FW tDQSRE ≈ tRPRE ≫ tRP).
+    for i in range(1 + byte_count):
+        edge_ns = dqs_times[i]
+        if edge_ns + 1e-15 < preamble_end_ns:
+            continue
+        ren_low = (i & 1) == 0
+        _append_re_pair(timeline, edge_ns, ren_low=ren_low)
+        half = dqs_times[i + 1] - edge_ns
+        _append_timing_span_many(
+            timeline,
+            ("REN", "REP"),
+            time_ns=edge_ns,
+            duration_ns=half,
+            param="tRP" if ren_low else "tREH",
+        )
 
-    # --- DQS + DATA -------------------------------------------------------
-    # Edge 0: first toggle (idle High-Z → 0). Edge 1: second toggle → DATA.
-    dqs_edge_count = byte_count + 1  # first toggle + one edge per data byte
-    for edge in range(dqs_edge_count):
-        edge_ns = _dqs_edge_ns(edge)
-        dqs_p = edge & 1  # 0, 1, 0, … (visible first edge from High-Z)
-        _append_edge(timeline, edge_ns, "DQSP", dqs_p)
-        _append_edge(timeline, edge_ns, "DQSN", 1 - dqs_p)
+    postamble_start_ns = data_end_ns
+    end_ns = postamble_start_ns + t_rpsth
+    _append_re_pair(timeline, postamble_start_ns, ren_low=True)
+    _append_re_pair(timeline, end_ns, ren_low=False)
+    _append_timing_span_many(
+        timeline,
+        ("REN", "REP"),
+        time_ns=postamble_start_ns,
+        duration_ns=t_rpsth,
+        param="tRPSTH",
+    )
 
+    # --- DQS --------------------------------------------------------------
+    _append_timing_span_many(
+        timeline,
+        ("DQSP", "DQSN"),
+        time_ns=start_ns,
+        duration_ns=t_dqsre,
+        param="tDQSRE",
+    )
+    for i in range(1 + byte_count):
+        dqs_p = i & 1
+        _append_edge(timeline, dqs_times[i], "DQSP", dqs_p)
+        _append_edge(timeline, dqs_times[i], "DQSN", 1 - dqs_p)
+        half = dqs_times[i + 1] - dqs_times[i]
+        _append_timing_span_many(
+            timeline,
+            ("DQSP", "DQSN"),
+            time_ns=dqs_times[i],
+            duration_ns=half,
+            param="tRP" if dqs_p == 0 else "tREH",
+        )
+    _append_edge(timeline, data_end_ns, "DQSP", INACTIVE_LEVELS["DQSP"])
+    _append_edge(timeline, data_end_ns, "DQSN", INACTIVE_LEVELS["DQSN"])
+
+    # --- DATA (from 2nd DQS edge; completes before tRPSTH) ----------------
     for index in range(byte_count):
-        beat_start_ns = _dqs_edge_ns(1 + index)
-        # Half-period after that edge: odd edge → tREH, even edge → tRP.
-        beat_ns = t_reh if ((1 + index) & 1) == 1 else t_rp
+        edge_ns = dqs_times[1 + index]
+        next_edge_ns = dqs_times[2 + index]
+        if index == 0:
+            beat_start_ns = max(start_ns, edge_ns - t_qdqss)
+            setup_ns = edge_ns - beat_start_ns
+            if setup_ns > 0:
+                _append_timing_span(
+                    timeline,
+                    signal="DATA",
+                    time_ns=beat_start_ns,
+                    duration_ns=setup_ns,
+                    param="tQDQSS",
+                )
+        else:
+            beat_start_ns = edge_ns
+        beat_ns = next_edge_ns - beat_start_ns
         value = "XX" if data is None else f"{int(data[index]) & 0xFF:02X}"
         _append_bus_value(
             timeline,
@@ -329,31 +518,13 @@ def _append_status_compare_transfer(
             value,
             label=label if index == 0 else None,
         )
-
-    _append_edge(timeline, data_end_ns, "DQSP", INACTIVE_LEVELS["DQSP"])
-    _append_edge(timeline, data_end_ns, "DQSN", INACTIVE_LEVELS["DQSN"])
-
-    # --- REN/REP ----------------------------------------------------------
-    # 1) Preamble: low for exactly tRPRE after tWHR, then return high.
-    preamble_end_ns = start_ns + t_rpre
-    _append_re_pair(timeline, start_ns, ren_low=True)
-    _append_re_pair(timeline, preamble_end_ns, ren_low=False)
-
-    # 2) One full tRP (low) + tREH (high) cycle per status byte.
-    #    Hold high for tREH after the preamble rise so the first data fall does
-    #    not collapse the preamble into a zero-width spike or merge with tRP.
-    t = preamble_end_ns + t_reh
-    for _ in range(byte_count):
-        _append_re_pair(timeline, t, ren_low=True)
-        t += t_rp
-        _append_re_pair(timeline, t, ren_low=False)
-        t += t_reh
-
-    # 3) Postamble tRPSTH begins right after the final data toggle.
-    postamble_start_ns = t
-    _append_re_pair(timeline, postamble_start_ns, ren_low=True)
-    end_ns = postamble_start_ns + t_rpsth
-    _append_re_pair(timeline, end_ns, ren_low=False)
+        _append_timing_span(
+            timeline,
+            signal="DATA",
+            time_ns=edge_ns,
+            duration_ns=next_edge_ns - edge_ns,
+            param="DQS half-period",
+        )
 
     timeline.t_max_ns = max(timeline.t_max_ns, end_ns, data_end_ns)
     return end_ns
@@ -393,6 +564,13 @@ def _append_write_transfer(
     # Drive high so the first data beat (DQSP=0) is a visible falling edge.
     _append_edge(timeline, start_ns, "DQSP", 1)
     _append_edge(timeline, start_ns, "DQSN", 0)
+    _append_timing_span_many(
+        timeline,
+        ("DQSP", "DQSN"),
+        time_ns=start_ns,
+        duration_ns=timing.t_wpre_ns,
+        param="tWPRE",
+    )
 
     # DQS stays in phase with the write clock (edges on the tDSC/2 grid from
     # data_start). DQ is shifted 90° earlier (half_beat = tDSC/4) so each DQS
@@ -403,6 +581,13 @@ def _append_write_transfer(
         dqs_p = index & 1
         _append_edge(timeline, dqs_edge_ns, "DQSP", dqs_p)
         _append_edge(timeline, dqs_edge_ns, "DQSN", 1 - dqs_p)
+        _append_timing_span_many(
+            timeline,
+            ("DQSP", "DQSN"),
+            time_ns=dqs_edge_ns,
+            duration_ns=beat_ns,
+            param="tDSC/2",
+        )
         value = "XX" if data is None else f"{int(data[index]) & 0xFF:02X}"
         _append_bus_value(
             timeline,
@@ -411,9 +596,24 @@ def _append_write_transfer(
             value,
             label=label if index == 0 else None,
         )
+        _append_timing_span(
+            timeline,
+            signal="DATA",
+            time_ns=dqs_edge_ns - half_beat_ns,
+            duration_ns=beat_ns,
+            param="tDSC/2 (DQ↔DQS 90°)",
+        )
 
     last_dqs_pulse_ns = data_start_ns + (byte_count - 1) * beat_ns
-    end_ns = last_dqs_pulse_ns + timing.t_wpst_ns + timing.t_wpsth_ns
+    post_ns = timing.t_wpst_ns + timing.t_wpsth_ns
+    end_ns = last_dqs_pulse_ns + post_ns
+    _append_timing_span_many(
+        timeline,
+        ("DQSP", "DQSN"),
+        time_ns=last_dqs_pulse_ns,
+        duration_ns=post_ns,
+        param="tWPST+tWPSTH",
+    )
     _append_edge(timeline, end_ns, "DQSP", INACTIVE_LEVELS["DQSP"])
     _append_edge(timeline, end_ns, "DQSN", INACTIVE_LEVELS["DQSN"])
     timeline.t_max_ns = max(timeline.t_max_ns, end_ns)
@@ -457,6 +657,29 @@ def _write_latch_cycle(
     _append_edge(timeline, t_we_fall, "WEN", 0)
     _append_edge(timeline, t_we_rise, "WEN", 1)
 
+    latch_sig = "CLE" if cle else "ALE"
+    _append_timing_span(
+        timeline,
+        signal=latch_sig,
+        time_ns=t_cle_assert,
+        duration_ns=t_cals,
+        param="tCALS",
+    )
+    _append_timing_span(
+        timeline,
+        signal=latch_sig,
+        time_ns=t_cals_end,
+        duration_ns=t_calh,
+        param="tCALH",
+    )
+    _append_timing_span(
+        timeline,
+        signal="WEN",
+        time_ns=t_we_fall,
+        duration_ns=t_wp,
+        param="tWP",
+    )
+
     # DQ follows CLE/ALE window (tCALS + tCALH), not the WE# low width.
     _append_data(
         timeline,
@@ -464,6 +687,13 @@ def _write_latch_cycle(
         t_cle_end - t_cle_assert,
         data_byte,
         label=data_label,
+    )
+    _append_timing_span(
+        timeline,
+        signal="DATA",
+        time_ns=t_cle_assert,
+        duration_ns=t_cle_end - t_cle_assert,
+        param="tCALS+tCALH",
     )
 
     _append_edge(timeline, t_cle_end, "CLE", 0)
@@ -489,6 +719,13 @@ def draw_e_assert_ce(
     _append_edge(timeline, start_ns, ce_signal, 0)
 
     end_ns = start_ns + timing.t_cs_ns
+    _append_timing_span(
+        timeline,
+        signal=ce_signal,
+        time_ns=start_ns,
+        duration_ns=timing.t_cs_ns,
+        param="tCS",
+    )
     timeline.t_max_ns = max(timeline.t_max_ns, end_ns)
 
     return PacketDrawResult(
@@ -749,9 +986,8 @@ def draw_e_rpio_compare(
     """Draw ``E_RPIO_COMPARE`` (EXTEND 8 / 0x18) single status read + compare.
 
     Uses the same status-out waveform as ``E_RPIO_COMPARE_REPEAT`` (one
-    attempt): ``tRPRE`` REN preamble, ``tREH`` hold, one ``tRP``/``tREH``
-    cycle, ``tRPSTH``; DQS from ``tDQSRE`` with ``tRP``/``tREH`` half-periods;
-    DATA from the second DQS edge.
+    attempt): REN ``tRPRE``/``tRP``/``tREH``/``tRPSTH``; DQS edges follow
+    corresponding RE edges by ``tDQSRE``; DATA from the second DQS edge.
     """
     timing = timing or DEFAULT_TIMING
     _require_start_ns(start_ns)
@@ -807,8 +1043,9 @@ def draw_e_rpio_compare_repeat(
 
     Waveform (per attempt, ``start_ns`` = after ``tWHR``): REN preamble
     ``tRPRE``, ``tREH`` hold, one ``tRP``/``tREH`` cycle per status byte,
-    then ``tRPSTH``; DQS from ``tDQSRE`` with matching ``tRP``/``tREH``
-    half-periods; DATA from the second DQS edge.
+    then ``tRPSTH``. DQS is not edge-aligned with RE — each DQS edge is the
+    matching RE edge delayed by ``tDQSRE``. DATA starts on the second DQS
+    edge (with ``tQDQSS`` setup on the first status byte).
     """
     timing = timing or DEFAULT_TIMING
     _require_start_ns(start_ns)
@@ -1252,6 +1489,7 @@ def draw_b_nop(
     cycles: int | None = None,
     duration_ns: float | None = None,
     cpl: int = 0,
+    timing_param: str | None = None,
     timing: NphyTiming | None = None,
 ) -> PacketDrawResult:
     """Append timing for NPHY ``B_NOP`` (BASIC opcode 2 / 0x02).
@@ -1268,6 +1506,8 @@ def draw_b_nop(
         converted timing (e.g. tWB, tWHR, tRHW) to ns.
     cpl:
         0 = pure wait (default); 1 = flush (still no pin change; duration applies).
+    timing_param:
+        Optional debug label (e.g. ``tWHR``) drawn on held control signals.
     """
     timing = timing or DEFAULT_TIMING
     _require_start_ns(start_ns)
@@ -1287,6 +1527,16 @@ def draw_b_nop(
         wait_ns = timing.nop_duration_ns(cycle_count)
 
     end_ns = start_ns + wait_ns
+    label = timing_param or (
+        f"B_NOP({cycle_count} cyc)" if cycle_count is not None else "B_NOP"
+    )
+    _append_timing_span_many(
+        timeline,
+        _WAIT_LABEL_SIGNALS,
+        time_ns=start_ns,
+        duration_ns=wait_ns,
+        param=label,
+    )
     timeline.t_max_ns = max(timeline.t_max_ns, end_ns)
 
     return PacketDrawResult(
@@ -1311,6 +1561,7 @@ def draw_e_timer_ctrl(
     timer_id: int = 0,
     cpl: int = 1,
     deassert_ce: bool | None = None,
+    timing_param: str | None = None,
     timing: NphyTiming | None = None,
 ) -> PacketDrawResult:
     """Append activity for NPHY ``E_TIMER_CTRL`` (EXTEND opcode A / 0x1A).
@@ -1363,6 +1614,14 @@ def draw_e_timer_ctrl(
         wait_ns = timing.timer_duration_ns(tick_count)
 
     end_ns = start_ns + wait_ns
+    if wait_ns > 0:
+        _append_timing_span_many(
+            timeline,
+            _WAIT_LABEL_SIGNALS + ("CE0", "CE1", "CE2", "CE3", "RB0", "RB1"),
+            time_ns=start_ns,
+            duration_ns=wait_ns,
+            param=timing_param or "E_TIMER_CTRL",
+        )
     timeline.t_max_ns = max(timeline.t_max_ns, end_ns)
 
     return PacketDrawResult(
@@ -1448,10 +1707,10 @@ def draw_program_cmd_issue(
       CMD 80h → ADDR×5 → B_NOP(tADL) → E_WRITE_DATA_DMA → CMD 10h/1Ah →
       B_NOP(tWB−tCEH) → E_TIMER_CTRL(tPROG, deassert CE)
 
-    R/B# falls after the confirm command and stays busy through tPROG.
-    Multi-plane dummy-busy (11h) and post-tPROG status polling are outside
-    this helper. Defaults omit SLC / page-type prefixes (TLC MSB last-plane
-    style with confirm ``10h``).
+    R/B# falls ``tWB`` after the confirm WE# rising edge and stays busy
+    through tPROG. Multi-plane dummy-busy (11h) and post-tPROG status
+    polling are outside this helper. Defaults omit SLC / page-type prefixes
+    (TLC MSB last-plane style with confirm ``10h``).
     """
     timing = timing or DEFAULT_TIMING
     _require_start_ns(start_ns)
@@ -1474,7 +1733,7 @@ def draw_program_cmd_issue(
 
     t = start_ns
     # lld_nphy_wait_nop_tick(10) before CE assert.
-    t = draw_b_nop(timeline, start_ns=t, cycles=10, timing=timing).end_ns
+    t = draw_b_nop(timeline, start_ns=t, cycles=10, timing_param="NOP(10)", timing=timing).end_ns
     t = draw_e_assert_ce(timeline, start_ns=t, lun=lun, timing=timing).end_ns
     if slc_cmd is not None:
         t = draw_e_write_cmd(
@@ -1494,7 +1753,7 @@ def draw_program_cmd_issue(
         ).end_ns
     # setup_ddr(tADL): B_NOP between address and data-in.
     t = draw_b_nop(
-        timeline, start_ns=t, duration_ns=adl_ns, timing=timing
+        timeline, start_ns=t, duration_ns=adl_ns, timing_param="tADL", timing=timing
     ).end_ns
     t = draw_e_write_data_dma(
         timeline,
@@ -1509,15 +1768,29 @@ def draw_program_cmd_issue(
     we_confirm = (
         confirm.we_rise_ns if confirm.we_rise_ns is not None else confirm.end_ns
     )
-    _set_rb_busy(timeline, we_confirm, lun, busy=True)
+    # tWB: WE# high → R/B# busy (active low).
+    rb_busy_ns = we_confirm + timing.t_wb_ns
+    _set_rb_busy(timeline, rb_busy_ns, lun, busy=True)
+    _append_timing_span(
+        timeline,
+        signal=lun_to_rb_signal(lun),
+        time_ns=we_confirm,
+        duration_ns=timing.t_wb_ns,
+        param="tWB",
+    )
     t = draw_b_nop(
-        timeline, start_ns=we_confirm, duration_ns=confirm_nop_ns, timing=timing
+        timeline,
+        start_ns=we_confirm,
+        duration_ns=confirm_nop_ns,
+        timing_param="tWB-tCEH",
+        timing=timing,
     ).end_ns
     timer = draw_e_timer_ctrl(
         timeline,
         start_ns=t,
         duration_ns=prog_ns,
         nphy_op=NPHY_OP_DEASSERT_CE_WDMA,
+        timing_param="tPROG",
         timing=timing,
     )
     _set_rb_busy(timeline, timer.end_ns, lun, busy=False)
@@ -1566,13 +1839,14 @@ def draw_erase_cmd_issue(
     we_d0 = cmd_d0.we_rise_ns if cmd_d0.we_rise_ns is not None else cmd_d0.end_ns
     _set_rb_busy(timeline, we_d0, lun, busy=True)
     t = draw_b_nop(
-        timeline, start_ns=we_d0, duration_ns=wb_ns, timing=timing
+        timeline, start_ns=we_d0, duration_ns=wb_ns, timing_param="tWB", timing=timing
     ).end_ns
     timer = draw_e_timer_ctrl(
         timeline,
         start_ns=t,
         duration_ns=erase_ns,
         nphy_op=NPHY_OP_DEASSERT_CE_WDMA,
+        timing_param="tERASE",
         timing=timing,
     )
     _set_rb_busy(timeline, timer.end_ns, lun, busy=False)
@@ -1620,12 +1894,13 @@ def draw_read_cmd_issue_through_tr(
     # tWB / R/B# busy from WE# rising of 30h (not CLE/DQ release).
     we30 = cmd30.we_rise_ns if cmd30.we_rise_ns is not None else cmd30.end_ns
     _set_rb_busy(timeline, we30, lun, busy=True)
-    t = draw_b_nop(timeline, start_ns=we30, duration_ns=wb_ns, timing=timing).end_ns
+    t = draw_b_nop(timeline, start_ns=we30, duration_ns=wb_ns, timing_param="tWB", timing=timing).end_ns
     timer = draw_e_timer_ctrl(
         timeline,
         start_ns=t,
         duration_ns=tr_ns,
         nphy_op=NPHY_OP_DEASSERT_CE_WDMA,
+        timing_param="tR",
         timing=timing,
     )
     _set_rb_busy(timeline, timer.end_ns, lun, busy=False)
@@ -1683,7 +1958,11 @@ def draw_read_sequence(
     # tWHR from WE# rising of status CMD (not CLE/DQ release).
     we_status = status.we_rise_ns if status.we_rise_ns is not None else status.end_ns
     t = draw_b_nop(
-        timeline, start_ns=we_status, duration_ns=timing.t_whr_ns, timing=timing
+        timeline,
+        start_ns=we_status,
+        duration_ns=timing.t_whr_ns,
+        timing_param="tWHR",
+        timing=timing,
     ).end_ns
     t = draw_e_rpio_compare_repeat(
         timeline,
@@ -1692,7 +1971,11 @@ def draw_read_sequence(
         timing=timing,
     ).end_ns
     t = draw_b_nop(
-        timeline, start_ns=t, duration_ns=timing.t_rhw_ns, timing=timing
+        timeline,
+        start_ns=t,
+        duration_ns=timing.t_rhw_ns,
+        timing_param="tRHW",
+        timing=timing,
     ).end_ns
 
     # Random data-output command and Toggle-DDR DMA.
@@ -1709,7 +1992,11 @@ def draw_read_sequence(
     # tWHR2 from WE# rising of E0h.
     we_e0 = cmd_e0.we_rise_ns if cmd_e0.we_rise_ns is not None else cmd_e0.end_ns
     t = draw_b_nop(
-        timeline, start_ns=we_e0, duration_ns=timing.t_whr2_ns, timing=timing
+        timeline,
+        start_ns=we_e0,
+        duration_ns=timing.t_whr2_ns,
+        timing_param="tWHR2",
+        timing=timing,
     ).end_ns
     t = draw_e_read_data_dma(
         timeline,
@@ -1720,6 +2007,10 @@ def draw_read_sequence(
         timing=timing,
     ).end_ns
     t = draw_b_nop(
-        timeline, start_ns=t, duration_ns=timing.dout_nop_ns, timing=timing
+        timeline,
+        start_ns=t,
+        duration_ns=timing.dout_nop_ns,
+        timing_param="dout_nop",
+        timing=timing,
     ).end_ns
     return draw_e_deassert_all_ce(timeline, start_ns=t)

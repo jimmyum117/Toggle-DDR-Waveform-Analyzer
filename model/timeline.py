@@ -28,9 +28,20 @@ class BusSegment:
 
 
 @dataclass
+class TimingSpan:
+    """Debug annotation: which timing param produced a hold on ``signal``."""
+
+    time_ns: float
+    duration_ns: float
+    signal: str
+    param: str  # e.g. "tRPRE", "tWPST+tWPSTH"
+
+
+@dataclass
 class Timeline:
     edges: list[Edge] = field(default_factory=list)
     bus_segments: list[BusSegment] = field(default_factory=list)
+    timing_spans: list[TimingSpan] = field(default_factory=list)
     t_min_ns: float = 0.0
     t_max_ns: float = 200.0
 
