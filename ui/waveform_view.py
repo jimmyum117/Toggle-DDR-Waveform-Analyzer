@@ -217,6 +217,8 @@ class WaveformView(QWidget):
         self._draw_grid(painter, width, height)
         self._draw_ruler(painter, width)
         self._draw_waveforms(painter, width, height)
+        if self.document.view_state.show_timing_labels:
+            self._draw_timing_labels(painter, width, height)
         self._draw_markers(painter, width, height)
         self._draw_cursor(painter, width, height)
 
@@ -423,6 +425,96 @@ class WaveformView(QWidget):
                     seg.value_hex,
                 )
 
+    def _draw_timing_labels(self, painter: QPainter, width: int, height: int) -> None:
+        """TEMP debug: draw timing-param names and window borders per track."""
+        spans = self.document.timeline.timing_spans
+        if not spans:
+            return
+
+        t0, t1 = self._visible_range(width)
+        track_y = {name: (y, h) for name, y, h in self._track_geometry()}
+
+        font = QFont("Menlo", 8)
+        if not font.exactMatch():
+            font = QFont("Courier New", 8)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+
+        border_pen = QPen(QColor("#fde68a"), 1, Qt.PenStyle.DotLine)
+        shade = QColor("#fde68a")
+        shade.setAlpha(40)
+        min_span_px = 18
+        for span in spans:
+            geom = track_y.get(span.signal)
+            if geom is None:
+                continue
+            y, h = geom
+            if y > height:
+                continue
+            seg_end = span.time_ns + span.duration_ns
+            if seg_end < t0 or span.time_ns > t1:
+                continue
+
+            x_start = int(round(self._time_to_x(span.time_ns)))
+            x_end = int(round(self._time_to_x(seg_end)))
+            x0 = max(0, x_start)
+            x1 = min(width, x_end)
+            if x1 < x0:
+                continue
+
+            y_top = y + 1
+            y_bot = y + h - 1
+
+            # Semi-transparent yellow fill for timing-parameter windows.
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(shade))
+            painter.drawRect(x0, y_top, max(1, x1 - x0), y_bot - y_top)
+
+            # Dotted yellow borders at each timing-window edge (track-local).
+            painter.setPen(border_pen)
+            if 0 <= x_start <= width:
+                painter.drawLine(x_start, y_top, x_start, y_bot)
+            if 0 <= x_end <= width and x_end != x_start:
+                painter.drawLine(x_end, y_top, x_end, y_bot)
+
+            span_px = x1 - x0
+            if span_px < min_span_px:
+                continue
+
+            text = span.param
+            text_w = metrics.horizontalAdvance(text) + 6
+            if text_w > span_px:
+                # Prefer a short form when zoomed out.
+                if span_px < metrics.horizontalAdvance(text[:6]) + 4:
+                    continue
+                text = text if span_px >= text_w else text[: max(3, span_px // 7)] + "…"
+                text_w = metrics.horizontalAdvance(text) + 6
+
+            cx = (x0 + x1) // 2
+            label_x = max(x0 + 1, min(cx - text_w // 2, x1 - text_w - 1))
+            label_y = y + max(1, (h - metrics.height()) // 2)
+            label_h = metrics.height() + 2
+
+            bg = QColor("#0f172a")
+            bg.setAlpha(170)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(bg))
+            painter.drawRoundedRect(label_x, label_y, text_w, label_h, 2, 2)
+            painter.setPen(QColor("#fde68a"))
+            painter.drawText(
+                label_x,
+                label_y,
+                text_w,
+                label_h,
+                Qt.AlignmentFlag.AlignCenter,
+                text,
+            )
+
+    def set_show_timing_labels(self, enabled: bool) -> None:
+        """TEMP debug toggle for on-track timing parameter labels."""
+        self.document.view_state.show_timing_labels = bool(enabled)
+        self.update()
+
     def _draw_markers(self, painter: QPainter, width: int, height: int) -> None:
         markers = sorted_markers(self.document.view_state.markers_ns)
         if not markers:
@@ -571,10 +663,6 @@ class WaveformView(QWidget):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         key = event.key()
-        if key == Qt.Key.Key_Escape:
-            self.clear_markers()
-            event.accept()
-            return
         if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
             self.zoom_in()
             event.accept()

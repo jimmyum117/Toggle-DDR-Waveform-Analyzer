@@ -172,12 +172,24 @@ class MainWindow(QMainWindow):
         self.open_action.setStatusTip("Open a log file in a new tab")
         self.open_action.triggered.connect(self.open_log)
 
-        self.new_tab_action = QAction("New Tab (Idle)", self)
+        self.new_tab_action = QAction("Idle", self)
         self.new_tab_action.setShortcut(QKeySequence.StandardKey.New)
         self.new_tab_action.setStatusTip(
             "Temporary: open a demo tab with all pins at inactive levels"
         )
         self.new_tab_action.triggered.connect(self.new_idle_tab)
+
+        self.new_read_tab_action = QAction("Read Cmd Issue", self)
+        self.new_read_tab_action.setStatusTip(
+            "Temporary: open §5.1 Read Cmd Issue + Data Out demo"
+        )
+        self.new_read_tab_action.triggered.connect(self.new_read_tab)
+
+        self.new_program_tab_action = QAction("Program Cmd Issue", self)
+        self.new_program_tab_action.setStatusTip(
+            "Temporary: open §5.3 Program Cmd Issue demo"
+        )
+        self.new_program_tab_action.triggered.connect(self.new_program_tab)
 
         self.close_tab_action = QAction("Close Tab", self)
         self.close_tab_action.setShortcut(QKeySequence.StandardKey.Close)
@@ -227,9 +239,17 @@ class MainWindow(QMainWindow):
         self.focus_end_action.triggered.connect(self.focus_end)
 
         self.clear_markers_action = QAction("Clear Markers", self)
-        self.clear_markers_action.setShortcut(QKeySequence("Escape"))
         self.clear_markers_action.setStatusTip("Remove all markers on the active tab")
         self.clear_markers_action.triggered.connect(self.clear_markers)
+
+        self.timing_labels_action = QAction("Timing Labels", self)
+        self.timing_labels_action.setCheckable(True)
+        self.timing_labels_action.setChecked(True)
+        self.timing_labels_action.setShortcut(QKeySequence("Ctrl+T"))
+        self.timing_labels_action.setStatusTip(
+            "TEMP debug: show timing-parameter names on each signal track"
+        )
+        self.timing_labels_action.toggled.connect(self._toggle_timing_labels)
 
         self.toggle_list_action = QAction("Toggle Event Panel", self)
         self.toggle_list_action.setCheckable(True)
@@ -240,6 +260,8 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.open_action)
         file_menu.addAction(self.new_tab_action)
+        file_menu.addAction(self.new_read_tab_action)
+        file_menu.addAction(self.new_program_tab_action)
         file_menu.addAction(self.close_tab_action)
         file_menu.addAction(self.close_all_action)
         file_menu.addSeparator()
@@ -255,6 +277,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.focus_end_action)
         view_menu.addSeparator()
         view_menu.addAction(self.clear_markers_action)
+        view_menu.addAction(self.timing_labels_action)
         view_menu.addSeparator()
         view_menu.addAction(self.toggle_list_action)
 
@@ -267,6 +290,8 @@ class MainWindow(QMainWindow):
         for action in (
             self.open_action,
             self.new_tab_action,
+            self.new_read_tab_action,
+            self.new_program_tab_action,
             self.save_image_action,
         ):
             toolbar.addAction(action)
@@ -281,6 +306,7 @@ class MainWindow(QMainWindow):
             toolbar.addAction(action)
         toolbar.addSeparator()
         toolbar.addAction(self.clear_markers_action)
+        toolbar.addAction(self.timing_labels_action)
 
     # --- document / tab management ----------------------------------------
 
@@ -305,12 +331,29 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Opened {path.name} (parsing not implemented yet)", 4000)
 
     def new_idle_tab(self) -> None:
-        """Temporary helper: demo tab with every pin held inactive."""
+        """Temporary helper: flat inactive-level demo tab."""
         self._idle_tab_counter += 1
         document = WaveformDocument.idle_demo(self._idle_tab_counter)
         self._add_document_tab(document, tooltip=document.note)
+        self.statusBar().showMessage("Opened idle demo — all pins inactive", 5000)
+
+    def new_read_tab(self) -> None:
+        """Temporary helper: §5.1 Read Cmd Issue + Data Out demo."""
+        self._idle_tab_counter += 1
+        document = WaveformDocument.read_cmd_issue_demo(self._idle_tab_counter)
+        self._add_document_tab(document, tooltip=document.note)
         self.statusBar().showMessage(
             "Opened idle demo — TEMP §5.1 Read Cmd Issue + Data Out",
+            5000,
+        )
+
+    def new_program_tab(self) -> None:
+        """Temporary helper: §5.3 Program Cmd Issue demo."""
+        self._idle_tab_counter += 1
+        document = WaveformDocument.program_cmd_issue_demo(self._idle_tab_counter)
+        self._add_document_tab(document, tooltip=document.note)
+        self.statusBar().showMessage(
+            "Opened idle demo — TEMP §5.3 Program Cmd Issue",
             5000,
         )
 
@@ -392,6 +435,14 @@ class MainWindow(QMainWindow):
         self.focus_start_action.setEnabled(has_tab)
         self.focus_end_action.setEnabled(has_tab)
         self.clear_markers_action.setEnabled(has_tab)
+        self.timing_labels_action.setEnabled(has_tab)
+        page = self._current_page()
+        if page is not None:
+            self.timing_labels_action.blockSignals(True)
+            self.timing_labels_action.setChecked(
+                page.document.view_state.show_timing_labels
+            )
+            self.timing_labels_action.blockSignals(False)
 
     # --- view / export ----------------------------------------------------
 
@@ -419,6 +470,11 @@ class MainWindow(QMainWindow):
         page = self._current_page()
         if page:
             page.waveform_view.focus_end()
+
+    def _toggle_timing_labels(self, checked: bool) -> None:
+        page = self._current_page()
+        if page:
+            page.waveform_view.set_show_timing_labels(checked)
 
     def clear_markers(self) -> None:
         page = self._current_page()

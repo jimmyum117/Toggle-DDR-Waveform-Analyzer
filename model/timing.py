@@ -63,8 +63,14 @@ class NphyTiming:
     # Toggle-DDR RE pulse widths (0.45×tRC @2400 MT/s). CFG SDR_RE_LOW_CYCLE=12 ns is SDR-only.
     t_rp_ns: float = 0.375
     t_reh_ns: float = 0.375
+    # DQS output pulse-width mins (datasheet): tQSL/tQSH = tRP/tREH − 0.05×tRC.
+    # Status/RDMA waveforms still lock DQS edges to RE + tDQSRE (same tRC
+    # cadence); these mins document the device derating vs RE.
+    t_qsl_ns: float = 0.333  # ≈ tRP − 0.05×tRC @ 2400 MT/s
+    t_qsh_ns: float = 0.333  # ≈ tREH − 0.05×tRC @ 2400 MT/s
     t_rpst_ns: float = 1.0  # non-ODT postamble approximation (table: calculated)
     t_rpsth_ns: float = 25.0  # read postamble hold
+    t_qdqss_ns: float = 2.0  # first valid status/ID data setup to DQS
 
     # Write-data waveform (§3 E_WPIO / E_WDMA).
     t_wpre_ns: float = 25.0  # ODT write preamble (tWPRE2)
